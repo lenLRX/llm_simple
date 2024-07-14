@@ -1,4 +1,5 @@
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <sstream>
 #include <cmath>
@@ -9,6 +10,12 @@
 #include "llama2_layer_cpu.hpp"
 #include "device.hpp"
 #include "util.h"
+
+
+Llama2InferenceCtx::Llama2InferenceCtx(int cur_pos, int prev_pos)
+:cur_pos(cur_pos), prev_pos(prev_pos) {
+    cur_size = cur_pos - prev_pos;
+}
 
 
 bool Llama2Model::Init() {
@@ -25,7 +32,7 @@ bool Llama2Model::Init() {
     InitFreqCIS();
 
     embedding_layer.Init(this);
-
+    causual_mask_layer.Init(this);
     transformer_layers.resize(n_layers);
     for (int i = 0; i < n_layers; ++i) {
         transformer_layers[i].Init(this, i);
@@ -40,44 +47,111 @@ bool Llama2Model::Init() {
 
 
 std::string Llama2Model::Forward(const std::string& input_seq) {
-    const int max_gen_len = 32; // TODO
+    const int max_gen_len = 8; // TODO
     auto tokens = tokenizer.Encode(input_seq, true, false);
     int input_token_size = tokens.size();
     const int total_len = std::min(max_seq_len, input_token_size + max_gen_len);
     spdlog::info("Llama2Model::Forward input \"{}\" promt size {} token_size {}",  input_seq, input_token_size, total_len);
     tokens.resize(total_len, tokenizer.pad_id);
-    auto input_token = Tensor::MakeCPUTensor(total_len, DT_UINT32);
-    memcpy(input_token->data_ptr, tokens.data(), sizeof(uint32_t) * total_len);
-    auto h = embedding_layer.Forward(input_token, total_len);
 
-    for (int i = 0; i < n_layers; ++i) {
-        h = transformer_layers[i].Forward(h, total_len);
+    int output_seq_len = input_token_size;
+
+    std::cout << "curr token: ";
+    for (int i = 0; i <input_token_size; ++i) {
+        std::cout << tokens[i] << " ";
     }
 
-    h = last_norm.Forward(h, total_len);
-    h = last_mm.Forward(h, total_len);
+    std::cout << "\n";
 
-    auto max_pos = argmax_layer.Forward(h, total_len);
+    int prev_pos = 0;
 
-    int next_tok = static_cast<int32_t*>(max_pos->data_ptr)[input_token_size];
+    for (int cur_pos = input_token_size; cur_pos < total_len; ++cur_pos) {
+        spdlog::info("cur_pos {} prev_pos {}",  cur_pos, prev_pos);
+        Llama2InferenceCtx ctx(cur_pos, prev_pos);
+        auto input_token = Tensor::MakeCPUTensor(ctx.cur_size, DT_UINT32);
+        memcpy(input_token->data_ptr, tokens.data() + prev_pos, sizeof(uint32_t) * ctx.cur_size);
+        auto h = embedding_layer.Forward(input_token, ctx);
+
+        {
+            Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
+            embed_map(static_cast<Eigen::half*>(h->data_ptr), ctx.cur_size, hidden_dim);
+
+            Eigen::array<Eigen::Index, 2> offsets = {0, 0};
+            Eigen::array<Eigen::Index, 2> extents = {ctx.cur_size, 4};
+            Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = embed_map.slice(offsets, extents);
+            std::cout << "embed output \n" << print_slice << "\n";
+            //break;
+        }
+
+        
+        auto causlmask = causual_mask_layer.Forward(ctx);
+
+        for (int i = 0; i < n_layers; ++i) {
+            h = transformer_layers[i].Forward(h, causlmask, ctx);
+
+            Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
+            h_map(static_cast<Eigen::half*>(h->data_ptr), ctx.cur_size, hidden_dim);
+            Eigen::array<Eigen::Index, 2> offsets = {0, 0};
+            Eigen::array<Eigen::Index, 2> extents = {ctx.cur_size, 4};
+            Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = h_map.slice(offsets, extents);
+            std::cout << "h_map " << i <<" output \n" << print_slice << "\n";
+            //break;
+        }
+        //break;
+
+        h = last_norm.Forward(h, ctx);
+
+        {
+            Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
+            h_map(static_cast<Eigen::half*>(h->data_ptr), ctx.cur_size, hidden_dim);
+            Eigen::array<Eigen::Index, 2> offsets = {0, 0};
+            Eigen::array<Eigen::Index, 2> extents = {ctx.cur_size, 4};
+            Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = h_map.slice(offsets, extents);
+            std::cout << "h_map after norm output \n" << print_slice << "\n";
+        }
+
+
+        h = last_mm.Forward(h, ctx);
+
+        {
+            Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
+            h_map(static_cast<Eigen::half*>(h->data_ptr), ctx.cur_size, tokenizer.n_words);
+            Eigen::array<Eigen::Index, 2> offsets = {0, 0};
+            Eigen::array<Eigen::Index, 2> extents = {ctx.cur_size, 4};
+            Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = h_map.slice(offsets, extents);
+            std::cout << "h_map last mm output \n" << print_slice << "\n";
+        }
+
+        auto max_pos = argmax_layer.Forward(h, ctx);
+        int next_tok = static_cast<int32_t*>(max_pos->data_ptr)[ctx.cur_size-1];
+        if (next_tok == tokenizer.eos_id) {
+            break;
+        }
+        spdlog::info("cur_pos {} total_len {} next_tok {}",  cur_pos, total_len, next_tok);
+        tokens[cur_pos] = next_tok;
+        ++output_seq_len;
+
+        prev_pos = cur_pos;
+    }
 
     auto output_token = tokens;
-    output_token[input_token_size] = next_tok;
-    output_token.resize(input_token_size + 1);
+    output_token.resize(output_seq_len);
 
     auto next_tok_str = tokenizer.Decode(output_token);
 
-    spdlog::info("Llama2Model::Forward input \"{}\" token_size {} next tok {} string {}", input_seq, total_len, next_tok, next_tok_str);
+    spdlog::info("Llama2Model::Forward input \"{}\" output string {}", input_seq, next_tok_str);
 
     return next_tok_str;
 }
 
 bool Llama2Model::InitFreqCIS() {
-    int freq_len = hidden_dim / 2;
+    const float theta = 10000.0f;
+    int head_dim = hidden_dim / n_heads;
+    int freq_len = head_dim / 2;
     float* freq = new float[freq_len];
 
     for (int i = 0; i < freq_len; ++i) {
-        freq[i] = static_cast<float>(i * 2) / static_cast<float>(hidden_dim);
+        freq[i] = 1.0f / (powf(theta, static_cast<float>(i *2) / static_cast<float>(head_dim)));
     }
 
     float* t = new float[max_seq_len];
@@ -97,8 +171,8 @@ bool Llama2Model::InitFreqCIS() {
     freq_cis = new float[freq_len*max_seq_len*2];
 
     for (int i = 0; i < max_seq_len * freq_len; ++i) {
-        freq_cis[i*2] = std::sin(freq_outer[i]);
-        freq_cis[i*2+1] = std::cos(freq_outer[i]);
+        freq_cis[i*2] = std::cos(freq_outer[i]);
+        freq_cis[i*2+1] = std::sin(freq_outer[i]);
     }
 
     delete[] freq;
@@ -108,8 +182,8 @@ bool Llama2Model::InitFreqCIS() {
 }
 
 
-std::shared_ptr<Tensor> Llama2EmbeddingLayer::Forward(std::shared_ptr<Tensor> input, size_t seq_len) {
-    return impl->Forward(input, seq_len);
+std::shared_ptr<Tensor> Llama2EmbeddingLayer::Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) {
+    return impl->Forward(input, ctx);
 }
 
 
@@ -191,7 +265,13 @@ bool RMSNormLayerImpl::Init(Llama2Model* model, int layer_no, bool pre_norm, boo
     }
     else {
         std::stringstream ss;
-        ss << "model.layers." << layer_no << ".input_layernorm.weight.bin";
+        if (pre_norm) {
+            ss << "model.layers." << layer_no << ".input_layernorm.weight.bin";
+        }
+        else {
+            ss << "model.layers." << layer_no << ".post_attention_layernorm.weight.bin";
+        }
+
         weight_path = weight_path / ss.str();
     }
 
@@ -211,8 +291,8 @@ RMSNormLayer::~RMSNormLayer() {
 }
 
 
-std::shared_ptr<Tensor> RMSNormLayer::Forward(std::shared_ptr<Tensor> input, size_t seq_len) {
-    return impl->Forward(input, seq_len);
+std::shared_ptr<Tensor> RMSNormLayer::Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) {
+    return impl->Forward(input, ctx);
 }
 
 
@@ -242,6 +322,7 @@ bool Llamma2TransformerLayerImpl::Init(Llama2Model* model, int layer_no) {
     n_heads = model->n_heads;
     ffn_hidden = (4 * hidden_dim * 2) / 3;
     ffn_hidden = (ffn_hidden + model->multiple_of - 1) / model->multiple_of * model->multiple_of;
+    max_seq_len = model->max_seq_len;
     return true;
 }
 
@@ -255,8 +336,8 @@ Llamma2TransformerLayer::~Llamma2TransformerLayer() {
 }
 
 
-std::shared_ptr<Tensor> Llamma2TransformerLayer::Forward(std::shared_ptr<Tensor> input, size_t seq_len) {
-    return impl->Forward(input, seq_len);
+std::shared_ptr<Tensor> Llamma2TransformerLayer::Forward(std::shared_ptr<Tensor> input, std::shared_ptr<Tensor> mask, Llama2InferenceCtx& ctx) {
+    return impl->Forward(input, mask, ctx);
 }
 
 
@@ -286,7 +367,8 @@ ArgMaxLayerImpl::~ArgMaxLayerImpl() {
 }
 
 bool ArgMaxLayerImpl::Init(Llama2Model* model) {
-    hidden_dim = model->hidden_dim;
+    // TODO: change name
+    hidden_dim = model->tokenizer.n_words;
     return true;
 }
 
@@ -301,8 +383,8 @@ ArgMaxLayer::~ArgMaxLayer() {
 }
 
 std::shared_ptr<Tensor>
-ArgMaxLayer::Forward(std::shared_ptr<Tensor> input, size_t seq_len) {
-    return impl->Forward(input, seq_len);
+ArgMaxLayer::Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) {
+    return impl->Forward(input, ctx);
 }
 
 bool ArgMaxLayer::Init(Llama2Model* model) {
@@ -348,8 +430,8 @@ SoftmaxLayer::~SoftmaxLayer() {
 }
 
 std::shared_ptr<Tensor>
-SoftmaxLayer::Forward(std::shared_ptr<Tensor> input, size_t seq_len) {
-    return impl->Forward(input, seq_len);
+SoftmaxLayer::Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) {
+    return impl->Forward(input, ctx);
 }
 
 
@@ -370,6 +452,48 @@ bool SoftmaxLayer::Init(Llama2Model* model) {
 
 void SoftmaxLayer::UnInit() {
 
+}
+
+
+CausualMaskLayerImpl::~CausualMaskLayerImpl() {
+
+}
+
+bool CausualMaskLayerImpl::Init(Llama2Model* model) {
+    return true;
+}
+
+
+void CausualMaskLayerImpl::UnInit() {
+
+}
+
+
+CausualMaskLayer::~CausualMaskLayer() {
+
+}
+
+std::shared_ptr<Tensor>
+CausualMaskLayer::Forward(Llama2InferenceCtx& ctx) {
+    return impl->Forward(ctx);
+}
+
+bool CausualMaskLayer::Init(Llama2Model* model) {
+    switch (model->device_type)
+    {
+    case DEV_CPU:
+        impl = new CausualMaskLayerCPUImpl();
+        break;
+    
+    default:
+        spdlog::critical("invalid device type");
+        return false;
+        break;
+    }
+    return impl->Init(model);
+}
+
+void CausualMaskLayer::UnInit() {
 }
 
 
@@ -406,8 +530,8 @@ MatmulLayer::~MatmulLayer() {
 
 }
 
-std::shared_ptr<Tensor> MatmulLayer::Forward(std::shared_ptr<Tensor> input, size_t seq_len) {
-    return impl->Forward(input, seq_len);
+std::shared_ptr<Tensor> MatmulLayer::Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) {
+    return impl->Forward(input, ctx);
 }
 
 bool MatmulLayer::Init(Llama2Model* model, const std::string& weight_path, size_t n, size_t k) {
@@ -436,6 +560,8 @@ RoPELayerImpl::~RoPELayerImpl() {
 
 bool RoPELayerImpl::Init(Llama2Model* model, const std::string& weight_path) {
     hidden_dim = model->hidden_dim;
+    head_dim = model->hidden_dim / model->n_heads;
+    n_heads = model->n_heads;
     rope_dim = model->max_seq_len * model->hidden_dim;
     weight_size = sizeof(float) * rope_dim;
 
@@ -454,8 +580,8 @@ RoPELayer::~RoPELayer() {
 }
 
 std::tuple<std::shared_ptr<Tensor>, std::shared_ptr<Tensor>>
-RoPELayer::Forward(std::shared_ptr<Tensor> input_q, std::shared_ptr<Tensor> input_k, size_t seq_len) {
-    return impl->Forward(input_q, input_k, seq_len);
+RoPELayer::Forward(std::shared_ptr<Tensor> input_q, std::shared_ptr<Tensor> input_k, Llama2InferenceCtx& ctx) {
+    return impl->Forward(input_q, input_k, ctx);
 }
 
 

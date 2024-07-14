@@ -21,12 +21,20 @@ public:
 
 class Llama2Model;
 
+class Llama2InferenceCtx {
+public:
+    Llama2InferenceCtx(int cur_pos, int prev_pos);
+    int cur_pos;
+    int prev_pos;
+    int cur_size;
+};
+
 
 class Llama2EmbeddingLayerImpl {
 public:
     virtual ~Llama2EmbeddingLayerImpl();
     // N -> [N, hidden_dim]
-    virtual std::shared_ptr<Tensor> Forward(std::shared_ptr<Tensor> input, size_t seq_len) = 0;
+    virtual std::shared_ptr<Tensor> Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) = 0;
     virtual bool Init(Llama2Model* model);
     virtual void UnInit();
 
@@ -43,7 +51,7 @@ public:
     
     ~Llama2EmbeddingLayer();
     // N -> [N, hidden_dim]
-    std::shared_ptr<Tensor> Forward(std::shared_ptr<Tensor> input, size_t seq_len);
+    std::shared_ptr<Tensor> Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx);
     bool Init(Llama2Model* model);
     void UnInit();
     
@@ -54,7 +62,7 @@ public:
 class RMSNormLayerImpl {
 public:
     virtual ~RMSNormLayerImpl();
-    virtual std::shared_ptr<Tensor> Forward(std::shared_ptr<Tensor> input, size_t seq_len) = 0;
+    virtual std::shared_ptr<Tensor> Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) = 0;
     virtual bool Init(Llama2Model* model, int layer_no, bool pre_norm, bool last_norm);
     virtual void UnInit();
 
@@ -68,7 +76,7 @@ public:
 class RMSNormLayer {
 public:
     ~RMSNormLayer();
-    virtual std::shared_ptr<Tensor> Forward(std::shared_ptr<Tensor> input, size_t seq_len);
+    virtual std::shared_ptr<Tensor> Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx);
     bool Init(Llama2Model* model, int layer_no, bool pre_norm, bool last_norm);
     void UnInit();
     RMSNormLayerImpl* impl{nullptr};
@@ -79,11 +87,13 @@ class RoPELayerImpl {
 public:
     virtual ~RoPELayerImpl();
     virtual std::tuple<std::shared_ptr<Tensor>, std::shared_ptr<Tensor>>
-        Forward(std::shared_ptr<Tensor> input_q, std::shared_ptr<Tensor> input_k, size_t seq_len) = 0;
+        Forward(std::shared_ptr<Tensor> input_q, std::shared_ptr<Tensor> input_k, Llama2InferenceCtx& ctx) = 0;
     virtual bool Init(Llama2Model* model, const std::string& weight_path);
     virtual void UnInit();
 
     size_t hidden_dim;
+    size_t n_heads;
+    size_t head_dim;
     size_t rope_dim;
     size_t weight_size;
     float* freqs_cis{nullptr};
@@ -94,7 +104,7 @@ class RoPELayer {
 public:
     ~RoPELayer();
     virtual std::tuple<std::shared_ptr<Tensor>, std::shared_ptr<Tensor>>
-        Forward(std::shared_ptr<Tensor> input_q, std::shared_ptr<Tensor> input_k, size_t seq_len);
+        Forward(std::shared_ptr<Tensor> input_q, std::shared_ptr<Tensor> input_k, Llama2InferenceCtx& ctx);
     bool Init(Llama2Model* model, const std::string& weight_path);
     void UnInit();
     RoPELayerImpl* impl{nullptr};
@@ -105,7 +115,7 @@ class ArgMaxLayerImpl {
 public:
     virtual ~ArgMaxLayerImpl();
     virtual std::shared_ptr<Tensor>
-        Forward(std::shared_ptr<Tensor> input, size_t seq_len) = 0;
+        Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) = 0;
     virtual bool Init(Llama2Model* model);
     virtual void UnInit();
 
@@ -117,7 +127,7 @@ class ArgMaxLayer {
 public:
     ~ArgMaxLayer();
     virtual std::shared_ptr<Tensor>
-        Forward(std::shared_ptr<Tensor> input, size_t seq_len);
+        Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx);
     bool Init(Llama2Model* model);
     void UnInit();
     ArgMaxLayerImpl* impl{nullptr};
@@ -128,7 +138,7 @@ class SoftmaxLayerImpl {
 public:
     virtual ~SoftmaxLayerImpl();
     virtual std::shared_ptr<Tensor>
-        Forward(std::shared_ptr<Tensor> input, size_t seq_len) = 0;
+        Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) = 0;
     virtual bool Init(Llama2Model* model);
     virtual void UnInit();
 
@@ -142,17 +152,38 @@ class SoftmaxLayer {
 public:
     ~SoftmaxLayer();
     virtual std::shared_ptr<Tensor>
-        Forward(std::shared_ptr<Tensor> input, size_t seq_len);
+        Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx);
     bool Init(Llama2Model* model);
     void UnInit();
     SoftmaxLayerImpl* impl{nullptr};
 };
 
 
+class CausualMaskLayerImpl {
+public:
+    virtual ~CausualMaskLayerImpl();
+    virtual std::shared_ptr<Tensor>
+        Forward(Llama2InferenceCtx& ctx) = 0;
+    virtual bool Init(Llama2Model* model);
+    virtual void UnInit();
+};
+
+
+class CausualMaskLayer {
+public:
+    ~CausualMaskLayer();
+    virtual std::shared_ptr<Tensor>
+        Forward(Llama2InferenceCtx& ctx);
+    bool Init(Llama2Model* model);
+    void UnInit();
+    CausualMaskLayerImpl* impl{nullptr};
+};
+
+
 class MatmulLayerImpl {
 public:
     virtual ~MatmulLayerImpl();
-    virtual std::shared_ptr<Tensor> Forward(std::shared_ptr<Tensor> input, size_t seq_len) = 0;
+    virtual std::shared_ptr<Tensor> Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) = 0;
     virtual bool Init(Llama2Model* model, const std::string& weight_path, size_t n, size_t k);
     virtual void UnInit();
 
@@ -166,7 +197,7 @@ public:
 class MatmulLayer {
 public:
     ~MatmulLayer();
-    std::shared_ptr<Tensor> Forward(std::shared_ptr<Tensor> input, size_t seq_len);
+    std::shared_ptr<Tensor> Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx);
     bool Init(Llama2Model* model, const std::string& weight_path, size_t n, size_t k);
     void UnInit();
     MatmulLayerImpl* impl{nullptr};
@@ -176,7 +207,7 @@ public:
 class Llamma2TransformerLayerImpl {
 public:
     virtual ~Llamma2TransformerLayerImpl() = default;
-    virtual std::shared_ptr<Tensor> Forward(std::shared_ptr<Tensor> input, size_t seq_len) = 0;
+    virtual std::shared_ptr<Tensor> Forward(std::shared_ptr<Tensor> input, std::shared_ptr<Tensor> mask, Llama2InferenceCtx& ctx) = 0;
     virtual bool Init(Llama2Model* model, int layer_no);
     virtual void UnInit();
 
@@ -184,19 +215,19 @@ public:
     size_t hidden_dim;
     size_t head_dim;
     size_t n_heads;
+    size_t max_seq_len;
 };
 
 
 class Llamma2TransformerLayer {
 public:
     ~Llamma2TransformerLayer();
-    std::shared_ptr<Tensor> Forward(std::shared_ptr<Tensor> input, size_t seq_len);
+    std::shared_ptr<Tensor> Forward(std::shared_ptr<Tensor> input, std::shared_ptr<Tensor> mask, Llama2InferenceCtx& ctx);
     bool Init(Llama2Model* model, int layer_no);
     void UnInit();
 
     Llamma2TransformerLayerImpl* impl{nullptr};
 };
-
 
 
 class Llama2Model {
@@ -219,6 +250,7 @@ public:
     float norm_eps;
 
     Llama2EmbeddingLayer embedding_layer;
+    CausualMaskLayer causual_mask_layer;
     std::vector<Llamma2TransformerLayer> transformer_layers;
     RMSNormLayer last_norm;
     MatmulLayer last_mm;

@@ -17,7 +17,7 @@ bool LoadBinaryFile(const char* path, void* buffer, size_t data_size) {
         return false;
     }
 
-    spdlog::info("loaded binary {} size {}", path, data_size);
+    spdlog::debug("loaded binary {} size {}", path, data_size);
 
     return true;
 }
