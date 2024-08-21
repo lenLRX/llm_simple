@@ -1,4 +1,5 @@
 #include <sstream>
+#include <algorithm>
 #include <iostream>
 
 #include <boost/filesystem.hpp>
@@ -63,6 +64,17 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerCPUImpl::Forward(std::shared_ptr<
 
     {
         Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
+        pre_norm_out_map(static_cast<Eigen::half*>(pre_norm_out->data_ptr), ctx.cur_size, hidden_dim);
+
+        Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
+        Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, 4};
+        Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = pre_norm_out_map.slice(print_offsets, print_extents);
+        std::cout << "pre_norm output \n" << print_slice << "\n";
+    }
+
+
+    {
+        Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
         q_map(static_cast<Eigen::half*>(q->data_ptr), ctx.cur_size, hidden_dim);
 
         Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
@@ -122,7 +134,7 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerCPUImpl::Forward(std::shared_ptr<
 
     {
         Eigen::array<Eigen::Index, 3> print_offsets = {0, 0, 0};
-        Eigen::array<Eigen::Index, 3> print_extents = {4, 4, 4};
+        Eigen::array<Eigen::Index, 3> print_extents = {std::min((Eigen::Index)4, (Eigen::Index)ctx.cur_pos), 4, 4};
         Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>  print_k_slice = k_cache_map.slice(print_offsets, print_extents);
         Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>  print_v_slice = v_cache_map.slice(print_offsets, print_extents);
         std::cout << "k_cache_map output \n" << print_k_slice << "\n";
@@ -212,6 +224,15 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerCPUImpl::Forward(std::shared_ptr<
     // tmp_output: (n_heads, seq_length, head_dim) -> (seq_length, n_heads, head_dim)
     tmp_output_tensor_map = tmp_output.shuffle(Eigen::array<int, 3>({1, 0, 2})).reshape(std::array<long,2>{(long)ctx.cur_size, (long)hidden_dim});
 
+
+    {
+        Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
+        Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, hidden_dim};
+        Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = tmp_output_tensor_map.slice(print_offsets, print_extents);
+        std::cout << "proj_o input \n" << print_slice << "\n";    
+    }
+
+    
 
     spdlog::debug("o_proj.Forward");
     auto output = o_proj.Forward(tmp_output_tensor, ctx);

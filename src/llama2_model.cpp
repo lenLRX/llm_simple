@@ -8,6 +8,7 @@
 
 #include "llama2_model.hpp"
 #include "llama2_layer_cpu.hpp"
+#include "llama2_layer_npu.hpp"
 #include "device.hpp"
 #include "util.h"
 
@@ -19,6 +20,13 @@ Llama2InferenceCtx::Llama2InferenceCtx(int cur_pos, int prev_pos)
 
 
 bool Llama2Model::Init() {
+    if (device_type == DEV_NPU) {
+        aclrtContext context;
+        int32_t deviceId = 0;
+        CHECK_ACL(aclrtSetDevice(deviceId));
+        CHECK_ACL(aclrtCreateContext(&context, deviceId));
+        CHECK_ACL(aclrtCreateStream(&model_stream));
+    }
     std::ifstream config_fs(config.config_path.c_str());
     config_fs >> config.config;
 
@@ -68,6 +76,9 @@ std::string Llama2Model::Forward(const std::string& input_seq) {
     for (int cur_pos = input_token_size; cur_pos < total_len; ++cur_pos) {
         spdlog::info("cur_pos {} prev_pos {}",  cur_pos, prev_pos);
         Llama2InferenceCtx ctx(cur_pos, prev_pos);
+        if (device_type == DEV_NPU) {
+            ctx.npu_stream = model_stream;
+        }
         auto input_token = Tensor::MakeCPUTensor(ctx.cur_size, DT_UINT32);
         memcpy(input_token->data_ptr, tokens.data() + prev_pos, sizeof(uint32_t) * ctx.cur_size);
         auto h = embedding_layer.Forward(input_token, ctx);
@@ -105,7 +116,7 @@ std::string Llama2Model::Forward(const std::string& input_seq) {
             Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
             h_map(static_cast<Eigen::half*>(h->data_ptr), ctx.cur_size, hidden_dim);
             Eigen::array<Eigen::Index, 2> offsets = {0, 0};
-            Eigen::array<Eigen::Index, 2> extents = {ctx.cur_size, 4};
+            Eigen::array<Eigen::Index, 2> extents = {ctx.cur_size, 288};
             Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = h_map.slice(offsets, extents);
             std::cout << "h_map after norm output \n" << print_slice << "\n";
         }
@@ -175,6 +186,14 @@ bool Llama2Model::InitFreqCIS() {
         freq_cis[i*2+1] = std::sin(freq_outer[i]);
     }
 
+    if (device_type == DEV_NPU) {
+        float* old_freq_cis = freq_cis;
+        size_t freq_cis_size = freq_len*max_seq_len*2*sizeof(float);
+        CHECK_ACL(aclrtMalloc((void **)&freq_cis, freq_cis_size, ACL_MEM_MALLOC_HUGE_FIRST));
+        CHECK_ACL(aclrtMemcpy(freq_cis, freq_cis_size, old_freq_cis, freq_cis_size, ACL_MEMCPY_HOST_TO_DEVICE));
+        delete[] old_freq_cis;
+    }
+
     delete[] freq;
     delete[] t;
     delete[] freq_outer;
@@ -190,6 +209,9 @@ std::shared_ptr<Tensor> Llama2EmbeddingLayer::Forward(std::shared_ptr<Tensor> in
 bool Llama2EmbeddingLayer::Init(Llama2Model* model) {
     switch (model->device_type)
     {
+    case DEV_NPU:
+        impl = new Llama2EmbeddingLayerNPUImpl();
+        break;
     case DEV_CPU:
         impl = new Llama2EmbeddingLayerCPUImpl();
         break;
@@ -299,6 +321,9 @@ std::shared_ptr<Tensor> RMSNormLayer::Forward(std::shared_ptr<Tensor> input, Lla
 bool RMSNormLayer::Init(Llama2Model* model, int layer_no, bool pre_norm, bool last_norm) {
     switch (model->device_type)
     {
+    case DEV_NPU:
+        impl = new RMSNormLayerNPUImpl();
+        break;
     case DEV_CPU:
         impl = new RMSNormLayerCPUImpl();
         break;
@@ -344,6 +369,9 @@ std::shared_ptr<Tensor> Llamma2TransformerLayer::Forward(std::shared_ptr<Tensor>
 bool Llamma2TransformerLayer::Init(Llama2Model* model, int layer_no) {
     switch (model->device_type)
     {
+    case DEV_NPU:
+        impl = new Llamma2TransformerLayerNPUImpl();
+        break;
     case DEV_CPU:
         impl = new Llamma2TransformerLayerCPUImpl();
         break;
@@ -390,6 +418,7 @@ ArgMaxLayer::Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) {
 bool ArgMaxLayer::Init(Llama2Model* model) {
     switch (model->device_type)
     {
+    case DEV_NPU:
     case DEV_CPU:
         impl = new ArgMaxLayerCPUImpl();
         break;
@@ -438,6 +467,9 @@ SoftmaxLayer::Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) {
 bool SoftmaxLayer::Init(Llama2Model* model) {
     switch (model->device_type)
     {
+    case DEV_NPU:
+        impl = new SoftmaxLayerNPUImpl();
+        break;
     case DEV_CPU:
         impl = new SoftmaxLayerCPUImpl();
         break;
@@ -481,6 +513,7 @@ CausualMaskLayer::Forward(Llama2InferenceCtx& ctx) {
 bool CausualMaskLayer::Init(Llama2Model* model) {
     switch (model->device_type)
     {
+    case DEV_NPU:
     case DEV_CPU:
         impl = new CausualMaskLayerCPUImpl();
         break;
@@ -537,6 +570,9 @@ std::shared_ptr<Tensor> MatmulLayer::Forward(std::shared_ptr<Tensor> input, Llam
 bool MatmulLayer::Init(Llama2Model* model, const std::string& weight_path, size_t n, size_t k) {
     switch (model->device_type)
     {
+    case DEV_NPU:
+        impl = new MatmulLayerNPUImpl();
+        break;
     case DEV_CPU:
         impl = new MatmulLayerCPUImpl();
         break;
@@ -588,6 +624,9 @@ RoPELayer::Forward(std::shared_ptr<Tensor> input_q, std::shared_ptr<Tensor> inpu
 bool RoPELayer::Init(Llama2Model* model, const std::string& weight_path) {
     switch (model->device_type)
     {
+    case DEV_NPU:
+        impl = new RoPELayerNPUImpl();
+        break;
     case DEV_CPU:
         impl = new RoPELayerCPUImpl();
         break;

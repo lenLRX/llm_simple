@@ -6,6 +6,8 @@
 #include <tuple>
 #include <nlohmann/json.hpp>
 
+#include "acl_util.hpp"
+
 #include "tokenizer.hpp"
 #include "device.hpp"
 
@@ -24,9 +26,11 @@ class Llama2Model;
 class Llama2InferenceCtx {
 public:
     Llama2InferenceCtx(int cur_pos, int prev_pos);
+    bool debug_print = false;
     int cur_pos;
     int prev_pos;
     int cur_size;
+    aclrtStream npu_stream{nullptr};
 };
 
 
@@ -248,6 +252,8 @@ public:
     int multiple_of;
     int max_seq_len{8192};
     float norm_eps;
+
+    aclrtStream model_stream;
 
     Llama2EmbeddingLayer embedding_layer;
     CausualMaskLayer causual_mask_layer;

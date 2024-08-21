@@ -6,6 +6,7 @@
 
 #include "tokenizer.hpp"
 #include "llama2_model.hpp"
+#include "acl_util.hpp"
 
 namespace po = boost::program_options;
 
@@ -24,6 +25,8 @@ int main(int argc, char** argv) {
         ("device_type", po::value<std::string>(&str_device_type)->required(), "device type, cpu/gpu")
         ("prompt", po::value<std::string>(&str_prompt)->required(), "prompt str");
 
+        spdlog::set_level(spdlog::level::debug);
+
         po::variables_map vm;
         po::store(po::parse_command_line(argc, argv, desc), vm);
 
@@ -39,6 +42,10 @@ int main(int argc, char** argv) {
         }
         else if (str_device_type == "gpu") {
             model.device_type = DEV_GPU;
+        }
+        else if (str_device_type == "npu") {
+            CHECK_ACL(aclInit(nullptr));
+            model.device_type = DEV_NPU;
         }
         else {
             spdlog::critical("invalid device type {}", str_device_type);

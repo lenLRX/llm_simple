@@ -1,3 +1,6 @@
+log.txt
+cpu_log.txt
+test_tiny_orangepi.sh
 *.bin
 build/
 model_output/

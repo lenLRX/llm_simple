@@ -1,0 +1,1 @@
+apt install libsentencepiece-dev libboost-program-options-dev libboost-system-dev libboost-filesystem-dev
