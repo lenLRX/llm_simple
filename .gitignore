@@ -2,8 +2,10 @@ log.txt
 cpu_log.txt
 test_tiny_orangepi.sh
 *.bin
+*.json
 build/
 model_output/
+profiling_output/
 
 # Prerequisites
 *.d

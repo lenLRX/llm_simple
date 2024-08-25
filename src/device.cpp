@@ -47,4 +47,5 @@ std::shared_ptr<Tensor> Tensor::to(DeviceType to_dev) {
             }
             break;
     }
+    return std::shared_ptr<Tensor>();
 }

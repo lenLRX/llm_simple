@@ -1,6 +1,8 @@
 #pragma once
 
 #include <memory>
+#include <list>
+#include <unordered_map>
 
 #include "defs.hpp"
 
@@ -11,11 +13,29 @@ public:
     static void Deallocate(void* ptr);
 };
 
+class NPUAllocatorEntry {
+public:
+    NPUAllocatorEntry(size_t s, void* p);
+    bool operator < (const NPUAllocatorEntry& other);
+    size_t size;
+    void* ptr;
+};
+
 class NPUAllocator {
 public:
     static NPUAllocator& GetInstance();
     static void* Allocate(size_t size);
     static void Deallocate(void* ptr);
+private:
+    void* AllocateImpl(size_t size);
+    void DeallocateImpl(void* ptr);
+
+    std::list<NPUAllocatorEntry> freelist;
+    std::unordered_map<void*, size_t> ptr_size;
+    size_t dev_mem_max{8*1024ULL*1024ULL*1024ULL};
+    size_t dev_mem_max_entry_num{128};
+    size_t max_record{0};
+    size_t allocated_bytes{0};
 };
 
 class Tensor : public std::enable_shared_from_this<Tensor> {

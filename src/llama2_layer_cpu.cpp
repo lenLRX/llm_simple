@@ -227,7 +227,7 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerCPUImpl::Forward(std::shared_ptr<
 
     {
         Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-        Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, hidden_dim};
+        Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, 16};
         Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = tmp_output_tensor_map.slice(print_offsets, print_extents);
         std::cout << "proj_o input \n" << print_slice << "\n";    
     }

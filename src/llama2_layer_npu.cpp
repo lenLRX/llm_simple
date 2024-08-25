@@ -1,4 +1,5 @@
 #include <spdlog/spdlog.h>
+#include <fmt/core.h>
 #include <iostream>
 #include <algorithm>
 #include <boost/filesystem.hpp>
@@ -7,6 +8,7 @@
 #include "acl_util.hpp"
 #include "util.h"
 #include "npu_ops/npu_ops.h"
+#include "profiling.hpp"
 
 
 Llama2EmbeddingLayerNPUImpl::~Llama2EmbeddingLayerNPUImpl() {
@@ -15,8 +17,7 @@ Llama2EmbeddingLayerNPUImpl::~Llama2EmbeddingLayerNPUImpl() {
 
 
 std::shared_ptr<Tensor> Llama2EmbeddingLayerNPUImpl::Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) {
-    spdlog::info("Llama2EmbeddingLayerNPUImpl::Forward!");
-    input = input->to(DEV_NPU);
+    spdlog::debug("Llama2EmbeddingLayerNPUImpl::Forward!");
     auto output = Tensor::MakeNPUTensor(hidden_dim * ctx.cur_size, DT_FLOAT16);
     if (input->data_type != DT_UINT32) {
         spdlog::critical("Llama2EmbeddingLayerNPUImpl::Forward invalid input type");
@@ -26,10 +27,15 @@ std::shared_ptr<Tensor> Llama2EmbeddingLayerNPUImpl::Forward(std::shared_ptr<Ten
     int32_t* input_ptr = static_cast<int32_t*>(input->data_ptr);
     uint16_t* output_ptr = static_cast<uint16_t*>(output->data_ptr);
 
-    npu_embedding_layer((void*)output_ptr, (void*)embedding_weight, (void*)input_ptr, ctx.cur_size, hidden_dim, DT_FLOAT16, ctx.npu_stream);
-    CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
+    APP_PROFILE("Llama2EmbeddingLayer", fmt::format("hidden_dim: {} ctx.cur_size: {}", hidden_dim, ctx.cur_size).c_str(),
+        ctx.npu_stream, &ctx.model->profiler, ctx.model->is_profiling);
 
-    return output->to(DEV_CPU);
+    npu_embedding_layer((void*)output_ptr, (void*)embedding_weight, (void*)input_ptr, ctx.cur_size, hidden_dim, DT_FLOAT16, ctx.npu_stream);
+    if (ctx.model->debug_print) {
+        CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
+    }
+
+    return output;
 }
 
 
@@ -73,17 +79,20 @@ RMSNormLayerNPUImpl::~RMSNormLayerNPUImpl() {
 }
 
 std::shared_ptr<Tensor> RMSNormLayerNPUImpl::Forward(std::shared_ptr<Tensor> input,  Llama2InferenceCtx& ctx) {
-    spdlog::info("RMSNormLayerNPUImpl::Forward!");
-    input = input->to(DEV_NPU);
+    spdlog::debug("RMSNormLayerNPUImpl::Forward!");
     auto output = Tensor::MakeNPUTensor(hidden_dim * ctx.cur_size, DT_FLOAT16);
 
     uint16_t* input_ptr = static_cast<uint16_t*>(input->data_ptr);
     uint16_t* output_ptr = static_cast<uint16_t*>(output->data_ptr);
 
+    APP_PROFILE("RMSNormLayer", fmt::format("hidden_dim: {} ctx.cur_size: {}", hidden_dim, ctx.cur_size).c_str(),
+        ctx.npu_stream, &ctx.model->profiler, ctx.model->is_profiling);
     npu_rmsnorm_layer((void*)output_ptr, (void*)norm_weight, (void*)input_ptr, ctx.cur_size, hidden_dim, eps, DT_FLOAT16, ctx.npu_stream);
-    CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
+    if (ctx.model->debug_print) {
+        CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
+    }
 
-    return output->to(DEV_CPU);
+    return output;
 }
 
 
@@ -136,20 +145,22 @@ SoftmaxLayerNPUImpl::~SoftmaxLayerNPUImpl() {
 
 std::shared_ptr<Tensor>
 SoftmaxLayerNPUImpl::Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) {
-    
-    input = input->to(DEV_NPU);
     auto hs = n_heads * ctx.cur_size;
-    auto output = Tensor::MakeCPUTensor(hs * ctx.cur_pos, DT_FLOAT16);
+    auto output = Tensor::MakeNPUTensor(hs * ctx.cur_pos, DT_FLOAT16);
 
-    spdlog::info("SoftmaxLayerNPUImpl::Forward! hs {} cur_pos {} cur_size {}", hs, ctx.cur_pos, ctx.cur_size);
+    spdlog::debug("SoftmaxLayerNPUImpl::Forward! hs {} cur_pos {} cur_size {}", hs, ctx.cur_pos, ctx.cur_size);
 
     uint16_t* input_ptr = static_cast<uint16_t*>(input->data_ptr);
     uint16_t* output_ptr = static_cast<uint16_t*>(output->data_ptr);
 
+    APP_PROFILE("SoftmaxLayer", fmt::format("hs {} cur_pos {} cur_size {}", hs, ctx.cur_pos, ctx.cur_size).c_str(),
+        ctx.npu_stream, &ctx.model->profiler, ctx.model->is_profiling);
     npu_softmax_layer((void*)output_ptr, (void*)input_ptr, hs, ctx.cur_pos, DT_FLOAT16, ctx.npu_stream);
-    CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
+    if (ctx.model->debug_print) {
+        CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
+    }
 
-    return output->to(DEV_CPU);
+    return output;
 }
 
 bool SoftmaxLayerNPUImpl::Init(Llama2Model* model) {
@@ -168,9 +179,7 @@ RoPELayerNPUImpl::~RoPELayerNPUImpl() {
 
 std::tuple<std::shared_ptr<Tensor>, std::shared_ptr<Tensor>>
 RoPELayerNPUImpl::Forward(std::shared_ptr<Tensor> input_q, std::shared_ptr<Tensor> input_k,  Llama2InferenceCtx& ctx) {
-    spdlog::info("RoPELayerNPUImpl::Forward seq len: {} n_head {} head_dim {} hidden_dim {}", ctx.cur_size, n_heads, hidden_dim/n_heads, hidden_dim);
-    input_q = input_q->to(DEV_NPU);
-    input_k = input_k->to(DEV_NPU);
+    spdlog::debug("RoPELayerNPUImpl::Forward seq len: {} n_head {} head_dim {} hidden_dim {}", ctx.cur_size, n_heads, hidden_dim/n_heads, hidden_dim);
 
     auto output_q = Tensor::MakeNPUTensor(hidden_dim * ctx.cur_size, DT_FLOAT16);
     auto output_k = Tensor::MakeNPUTensor(hidden_dim * ctx.cur_size, DT_FLOAT16);
@@ -181,11 +190,15 @@ RoPELayerNPUImpl::Forward(std::shared_ptr<Tensor> input_q, std::shared_ptr<Tenso
     uint16_t* output_q_ptr = static_cast<uint16_t*>(output_q->data_ptr);
     uint16_t* output_k_ptr = static_cast<uint16_t*>(output_k->data_ptr);
 
+    APP_PROFILE("RoPELayer", fmt::format("seq len: {} n_head {} head_dim {} hidden_dim {}", ctx.cur_size, n_heads, hidden_dim/n_heads, hidden_dim).c_str(),
+        ctx.npu_stream, &ctx.model->profiler, ctx.model->is_profiling);
     npu_rope_layer(output_q_ptr, output_k_ptr, freqs_cis, input_q_ptr, input_k_ptr,
                     ctx.cur_size, n_heads, hidden_dim, DT_FLOAT16, ctx.npu_stream);
-    CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
+    if (ctx.model->debug_print) {
+        CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
+    }
 
-    return std::make_tuple(output_q->to(DEV_CPU), output_k->to(DEV_CPU));
+    return std::make_tuple(output_q, output_k);
 }
 
 bool RoPELayerNPUImpl::Init(Llama2Model* model, const std::string& weight_path) {
@@ -211,9 +224,10 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
     spdlog::debug("v_proj.Forward");
     auto v = v_proj.Forward(pre_norm_out, ctx);
 
-    {
+    if (ctx.model->debug_print) {
+        auto pre_norm_out_cpu = pre_norm_out->to(DEV_CPU);
         Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
-        pre_norm_out_map(static_cast<Eigen::half*>(pre_norm_out->data_ptr), ctx.cur_size, hidden_dim);
+        pre_norm_out_map(static_cast<Eigen::half*>(pre_norm_out_cpu->data_ptr), ctx.cur_size, hidden_dim);
 
         Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
         Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, 4};
@@ -222,9 +236,10 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
     }
 
 
-    {
+    if (ctx.model->debug_print) {
+        auto q_cpu = q->to(DEV_CPU);
         Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
-        q_map(static_cast<Eigen::half*>(q->data_ptr), ctx.cur_size, hidden_dim);
+        q_map(static_cast<Eigen::half*>(q_cpu->data_ptr), ctx.cur_size, hidden_dim);
 
         Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
         Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, 4};
@@ -240,10 +255,12 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
     auto k_emb = std::get<1>(q_k_emb);
 
     // (seq_length, n_heads, head_dim) -> (n_heads, seq_length, head_dim)
-    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>> 
-    q_emb_map(static_cast<Eigen::half*>(q_emb->data_ptr), ctx.cur_size, n_heads, head_dim);
 
-    {
+    if (ctx.model->debug_print) {
+        auto q_emb_cpu = q_emb->to(DEV_CPU);
+        Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>> 
+        q_emb_map(static_cast<Eigen::half*>(q_emb->data_ptr), ctx.cur_size, n_heads, head_dim);
+
         Eigen::array<Eigen::Index, 3> print_offsets = {0, 0, 0};
         Eigen::array<Eigen::Index, 3> print_extents = {ctx.cur_size, 4, 4};
         Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>  print_slice = q_emb_map.slice(print_offsets, print_extents);
@@ -252,36 +269,37 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
     
 
     // (seq_length, n_heads, head_dim)-> (n_heads, seq_length, head_dim) -> (n_heads, head_dim, seq_length)
-    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>> 
-    k_emb_map(static_cast<Eigen::half*>(k_emb->data_ptr), ctx.cur_size, n_heads, head_dim);
+    
 
-    {
+    if (ctx.model->debug_print) {
+        auto k_emb_cpu = k_emb->to(DEV_CPU);
+        Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>> 
+        k_emb_map(static_cast<Eigen::half*>(k_emb->data_ptr), ctx.cur_size, n_heads, head_dim);
         Eigen::array<Eigen::Index, 3> print_offsets = {0, 0, 0};
         Eigen::array<Eigen::Index, 3> print_extents = {ctx.cur_size, 4, 4};
         Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>  print_slice = k_emb_map.slice(print_offsets, print_extents);
         std::cout << "k emb output \n" << print_slice << "\n";    
     }
-
-    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>> 
-    v_map(static_cast<Eigen::half*>(v->data_ptr), ctx.cur_size, n_heads, head_dim);
-
-
     // update kv cache
-    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>> 
-    k_cache_map(static_cast<Eigen::half*>(k_cache->data_ptr), ctx.cur_pos, n_heads, head_dim);
-
-    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>> 
-    v_cache_map(static_cast<Eigen::half*>(v_cache->data_ptr), ctx.cur_pos, n_heads, head_dim);
-
+    size_t copy_size = ctx.cur_size * n_heads * head_dim * sizeof(uint16_t);
+    size_t copy_offset = ctx.prev_pos * n_heads * head_dim * sizeof(uint16_t);
+    
     {
-        Eigen::array<Eigen::Index, 3> cache_offsets = {ctx.prev_pos, 0, 0};
-        Eigen::array<Eigen::Index, 3> cache_extents = {ctx.cur_size, n_heads, head_dim};
-
-        k_cache_map.slice(cache_offsets, cache_extents) = k_emb_map;
-        v_cache_map.slice(cache_offsets, cache_extents) = v_map;
+        APP_PROFILE("UpdateKVCache", fmt::format("copy_size {} byte", copy_size).c_str(),
+            ctx.npu_stream, &ctx.model->profiler, ctx.model->is_profiling);
+        CHECK_ACL(aclrtMemcpyAsync((void*)((uint8_t*)k_cache->data_ptr + copy_offset), copy_size, k_emb->data_ptr, copy_size, ACL_MEMCPY_HOST_TO_DEVICE, ctx.npu_stream));
+        CHECK_ACL(aclrtMemcpyAsync((void*)((uint8_t*)v_cache->data_ptr + copy_offset), copy_size, v->data_ptr, copy_size, ACL_MEMCPY_HOST_TO_DEVICE, ctx.npu_stream));
     }
 
-    {
+    if (ctx.model->debug_print) {
+        CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
+        auto k_cache_cpu = k_cache->to(DEV_CPU);
+        auto v_cache_cpu = v_cache->to(DEV_CPU);
+        Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>> 
+        k_cache_map(static_cast<Eigen::half*>(k_cache_cpu->data_ptr), ctx.cur_pos, n_heads, head_dim);
+
+        Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>> 
+        v_cache_map(static_cast<Eigen::half*>(v_cache_cpu->data_ptr), ctx.cur_pos, n_heads, head_dim);
         Eigen::array<Eigen::Index, 3> print_offsets = {0, 0, 0};
         Eigen::array<Eigen::Index, 3> print_extents = {std::min((Eigen::Index)4, (Eigen::Index)ctx.cur_pos), 4, 4};
         Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>  print_k_slice = k_cache_map.slice(print_offsets, print_extents);
@@ -296,22 +314,21 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
     // (bs, nh, seqlen, hd) @ (bs, nh, hd, cache_len+seqlen) => bs, nh, seqlen, cache_len+seqlen
     
 
-    std::cout << "n_heads: " << n_heads << " head_dim: " << head_dim
-      << " ctx.cur_size :" << ctx.cur_size << " ctx.cur_pos: " << ctx.cur_pos << "\n";
-
-    auto q_emb_npu = q_emb->to(DEV_NPU);
-    auto k_emb_npu = k_cache->to(DEV_NPU);
-    npu_batch_matmul_qk_trans_causual_layer(q_matmul_k->data_ptr, q_emb_npu->data_ptr, k_emb_npu->data_ptr,
-                           n_heads, ctx.cur_size, ctx.cur_pos, head_dim, ctx.prev_pos, qk_scale, DT_FLOAT16, ctx.npu_stream);
-    CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
-
-
-    q_matmul_k = q_matmul_k->to(DEV_CPU);
-    
-    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>>
-    q_matmul_k_map(static_cast<Eigen::half*>(q_matmul_k->data_ptr), n_heads, ctx.cur_size, ctx.cur_pos);
+    spdlog::debug("n_heads: {} head_dim: {} ctx.cur_size: {} ctx.cur_pos: {}", 
+                    n_heads, head_dim, ctx.cur_size, ctx.cur_pos);
 
     {
+        APP_PROFILE("BMM_QK", fmt::format("n_heads: {} head_dim: {} ctx.cur_size: {} ctx.cur_pos: {}", n_heads, head_dim, ctx.cur_size, ctx.cur_pos).c_str(),
+                ctx.npu_stream, &ctx.model->profiler, ctx.model->is_profiling);
+        npu_batch_matmul_qk_trans_causual_layer(q_matmul_k->data_ptr, q_emb->data_ptr, k_cache->data_ptr,
+                            n_heads, ctx.cur_size, ctx.cur_pos, head_dim, ctx.prev_pos, qk_scale, DT_FLOAT16, ctx.npu_stream);
+    }
+    
+    if (ctx.model->debug_print) {
+        CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
+        auto q_matmul_k_cpu = q_matmul_k->to(DEV_CPU);
+        Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>>
+        q_matmul_k_map(static_cast<Eigen::half*>(q_matmul_k->data_ptr), n_heads, ctx.cur_size, ctx.cur_pos);
         Eigen::array<Eigen::Index, 3> print_offsets = {0, 0, 0};
         Eigen::array<Eigen::Index, 3> print_extents = {n_heads, ctx.cur_size, ctx.cur_pos};
         Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>  print_slice = q_matmul_k_map.slice(print_offsets, print_extents);
@@ -323,10 +340,10 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
     auto softmax_qk = softmax.Forward(q_matmul_k, ctx);
 
     // (N, S, S)
-    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>> 
-    softmax_qk_map(static_cast<Eigen::half*>(softmax_qk->data_ptr), n_heads, ctx.cur_size, ctx.cur_pos);
-
-    {
+    if (ctx.model->debug_print) {
+        auto softmax_qk_cpu = softmax_qk->to(DEV_CPU);
+        Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>> 
+        softmax_qk_map(static_cast<Eigen::half*>(softmax_qk_cpu->data_ptr), n_heads, ctx.cur_size, ctx.cur_pos);
         Eigen::array<Eigen::Index, 3> print_offsets = {0, 0, 0};
         Eigen::array<Eigen::Index, 3> print_extents = {n_heads, ctx.cur_size, ctx.cur_pos};
         Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>  print_slice = softmax_qk_map.slice(print_offsets, print_extents);
@@ -337,41 +354,23 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
 
     spdlog::debug("output = torch.matmul(scores, values)");
 
-    auto tmp_output_tensor_npu = Tensor::MakeNPUTensor(hidden_dim * ctx.cur_size, DT_FLOAT16);
-    auto softmax_qk_npu = softmax_qk->to(DEV_NPU);
-
-    std::cout << "bmm 2 n_heads: " << n_heads << " head_dim: " << head_dim
-      << " ctx.cur_size :" << ctx.cur_size << " ctx.cur_pos: " << ctx.cur_pos << "\n";
-
-    auto v_cache_npu = v_cache->to(DEV_NPU);
-
-    npu_batch_matmul_trans_v_layer(tmp_output_tensor_npu->data_ptr, softmax_qk_npu->data_ptr, v_cache_npu->data_ptr,
-                           n_heads, ctx.cur_size, head_dim, ctx.cur_pos, 1.0, DT_FLOAT16, ctx.npu_stream);
-    CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
-
-    auto bmm2_cpu = tmp_output_tensor_npu->to(DEV_CPU);
-
-    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>>
-    bmm2_map(static_cast<Eigen::half*>(bmm2_cpu->data_ptr), n_heads, ctx.cur_size, head_dim);
-
-    auto tmp_output_tensor = Tensor::MakeCPUTensor(hidden_dim * ctx.cur_size, DT_FLOAT16);;
-    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
-    tmp_output_tensor_map(static_cast<Eigen::half*>(tmp_output_tensor->data_ptr), ctx.cur_size, hidden_dim);
-
-    // tmp_output: (n_heads, seq_length, head_dim) -> (seq_length, n_heads, head_dim)
-    tmp_output_tensor_map = bmm2_map.shuffle(Eigen::array<int, 3>({1, 0, 2})).reshape(std::array<long,2>{(long)ctx.cur_size, (long)hidden_dim});
-
+    auto tmp_output_tensor = Tensor::MakeNPUTensor(hidden_dim * ctx.cur_size, DT_FLOAT16);
 
     {
-        Eigen::array<Eigen::Index, 3> print_offsets = {0, 0, 0};
-        Eigen::array<Eigen::Index, 3> print_extents = {n_heads, ctx.cur_size, 4};
-        Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>  print_slice = bmm2_map.slice(print_offsets, print_extents);
-        std::cout << "xv output \n" << print_slice << "\n";    
+        APP_PROFILE("BMM_SCORE_V", fmt::format("n_heads: {} head_dim: {} ctx.cur_size: {} ctx.cur_pos: {}", n_heads, head_dim, ctx.cur_size, ctx.cur_pos).c_str(),
+                    ctx.npu_stream, &ctx.model->profiler, ctx.model->is_profiling);
+        npu_batch_matmul_trans_v_layer(tmp_output_tensor->data_ptr, softmax_qk->data_ptr, v_cache->data_ptr,
+                            n_heads, ctx.cur_size, head_dim, ctx.cur_pos, 1.0, DT_FLOAT16, ctx.npu_stream);
     }
+    
 
-    {
+    if (ctx.model->debug_print) {
+        CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
+        auto tmp_output_tensor_cpu = tmp_output_tensor->to(DEV_CPU);
+        Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
+        tmp_output_tensor_map(static_cast<Eigen::half*>(tmp_output_tensor_cpu->data_ptr), ctx.cur_size, hidden_dim);
         Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-        Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, hidden_dim};
+        Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, 16};
         Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = tmp_output_tensor_map.slice(print_offsets, print_extents);
         std::cout << "proj_o input \n" << print_slice << "\n";    
     }
@@ -379,10 +378,10 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
     spdlog::debug("o_proj.Forward");
     auto output = o_proj.Forward(tmp_output_tensor, ctx);
 
-    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
-    output_map(static_cast<Eigen::half*>(output->data_ptr), ctx.cur_size, hidden_dim);
-
-    {
+    if (ctx.model->debug_print) {
+        auto output_cpu = output->to(DEV_CPU);
+        Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
+        output_map(static_cast<Eigen::half*>(output_cpu->data_ptr), ctx.cur_size, hidden_dim);
         Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
         Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, 4};
         Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = output_map.slice(print_offsets, print_extents);
@@ -392,21 +391,18 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
     auto output_add_input = Tensor::MakeNPUTensor(hidden_dim * ctx.cur_size, DT_FLOAT16);
 
     spdlog::debug("attn output + input");
-
-    auto input_npu = input->to(DEV_NPU);
-    auto output_npu = output->to(DEV_NPU);
-
-    npu_add_layer(output_add_input->data_ptr, input_npu->data_ptr, output_npu->data_ptr,
-                    ctx.cur_size * hidden_dim, DT_FLOAT16, ctx.npu_stream);
-    CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
-
-    output_add_input = output_add_input->to(DEV_CPU);
-
-    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
-    output_add_input_map(static_cast<Eigen::half*>(output_add_input->data_ptr), ctx.cur_size, hidden_dim);
-
-
     {
+        APP_PROFILE("Add", fmt::format("attn output + input").c_str(),
+                        ctx.npu_stream, &ctx.model->profiler, ctx.model->is_profiling);
+        npu_add_layer(output_add_input->data_ptr, input->data_ptr, output->data_ptr,
+                        ctx.cur_size * hidden_dim, DT_FLOAT16, ctx.npu_stream);
+    }
+
+    if (ctx.model->debug_print) {
+        CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
+        auto output_add_input_cpu = output_add_input->to(DEV_CPU);
+        Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
+        output_add_input_map(static_cast<Eigen::half*>(output_add_input_cpu->data_ptr), ctx.cur_size, hidden_dim);
         Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
         Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, 4};
         Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = output_add_input_map.slice(print_offsets, print_extents);
@@ -416,23 +412,23 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
     spdlog::debug("post_norm.Forward");
     auto post_norm_out = post_norm.Forward(output_add_input, ctx);
 
-    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
-    post_norm_out_map(static_cast<Eigen::half*>(post_norm_out->data_ptr), ctx.cur_size, hidden_dim);
-    {
+    if (ctx.model->debug_print) {
+        auto post_norm_out_cpu = post_norm_out->to(DEV_CPU);
+        Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
+        post_norm_out_map(static_cast<Eigen::half*>(post_norm_out_cpu->data_ptr), ctx.cur_size, hidden_dim);
         Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
         Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, 4};
         Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = post_norm_out_map.slice(print_offsets, print_extents);
         std::cout << "post_norm output \n" << print_slice << "\n";    
     }
 
-
     spdlog::debug("gate_proj.Forward");
     auto w1_h = gate_proj.Forward(post_norm_out, ctx);
 
-    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
-    w1_h_map(static_cast<Eigen::half*>(w1_h->data_ptr), ctx.cur_size, ffn_hidden);
-
-    {
+    if (ctx.model->debug_print) {
+        auto w1_h_cpu = w1_h->to(DEV_CPU);
+        Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
+        w1_h_map(static_cast<Eigen::half*>(w1_h->data_ptr), ctx.cur_size, ffn_hidden);
         Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
         Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, 4};
         Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = w1_h_map.slice(print_offsets, print_extents);
@@ -447,19 +443,17 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
     auto silu_size = ffn_hidden * ctx.cur_size;
     auto silu_out_mul_w3 = Tensor::MakeNPUTensor(silu_size, DT_FLOAT16);
 
-    auto w1_h_npu = w1_h->to(DEV_NPU);
-    auto w3_h_npu = w3_h->to(DEV_NPU);
-
-    npu_silu_mul_layer(silu_out_mul_w3->data_ptr, w1_h_npu->data_ptr, w3_h_npu->data_ptr,
-                           silu_size, DT_FLOAT16, ctx.npu_stream);
-    CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
-
-    silu_out_mul_w3 = silu_out_mul_w3->to(DEV_CPU);
-
-    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
-    silu_out_mul_w3_map(static_cast<Eigen::half*>(silu_out_mul_w3->data_ptr), ctx.cur_size, ffn_hidden);
-    
     {
+        APP_PROFILE("SILU_MUL", fmt::format("silu(gate_proj.Forward) * up_proj.Forward").c_str(),
+                            ctx.npu_stream, &ctx.model->profiler, ctx.model->is_profiling);
+        npu_silu_mul_layer(silu_out_mul_w3->data_ptr, w1_h->data_ptr, w3_h->data_ptr,
+                            silu_size, DT_FLOAT16, ctx.npu_stream);
+    }
+    if (ctx.model->debug_print) {
+        CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
+        auto silu_out_mul_w3_cpu = silu_out_mul_w3->to(DEV_CPU);
+        Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
+        silu_out_mul_w3_map(static_cast<Eigen::half*>(silu_out_mul_w3_cpu->data_ptr), ctx.cur_size, ffn_hidden);
         // bug here
         Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
         Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, 4};
@@ -474,14 +468,20 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
     spdlog::debug("w2_h + output");
     auto ffn_output = Tensor::MakeNPUTensor(hidden_dim * ctx.cur_size, DT_FLOAT16);
    
-    auto w2_h_npu = w2_h->to(DEV_NPU);
-    auto output_add_input_npu = output_add_input->to(DEV_NPU);
+    {
+        APP_PROFILE("Add", fmt::format("w2_h + output").c_str(),
+                            ctx.npu_stream, &ctx.model->profiler, ctx.model->is_profiling);
+        npu_add_layer(ffn_output->data_ptr, w2_h->data_ptr, output_add_input->data_ptr,
+                        ctx.cur_size * hidden_dim, DT_FLOAT16, ctx.npu_stream);
+    }
 
-    npu_add_layer(ffn_output->data_ptr, w2_h_npu->data_ptr, output_add_input_npu->data_ptr,
-                    ctx.cur_size * hidden_dim, DT_FLOAT16, ctx.npu_stream);
-    CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
+    //if (ctx.model->debug_print) {
+    {
+        // need to sync here, to make sure all temp tensor are read
+        CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
+    }
 
-    return ffn_output->to(DEV_CPU);
+    return ffn_output;
 }
 
 Llamma2TransformerLayerNPUImpl::~Llamma2TransformerLayerNPUImpl() {
@@ -555,8 +555,8 @@ bool Llamma2TransformerLayerNPUImpl::Init(Llama2Model* model, int layer_no) {
         return false;
     }
 
-    k_cache = Tensor::MakeCPUTensor(hidden_dim * max_seq_len, DT_FLOAT16);
-    v_cache = Tensor::MakeCPUTensor(hidden_dim * max_seq_len, DT_FLOAT16);
+    k_cache = Tensor::MakeNPUTensor(hidden_dim * max_seq_len, DT_FLOAT16);
+    v_cache = Tensor::MakeNPUTensor(hidden_dim * max_seq_len, DT_FLOAT16);
 
     return true;
 }
@@ -572,7 +572,6 @@ MatmulLayerNPUImpl::~MatmulLayerNPUImpl() {
 
 std::shared_ptr<Tensor> MatmulLayerNPUImpl::Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) {
     auto output = Tensor::MakeNPUTensor(n * ctx.cur_size, DT_FLOAT16);
-    input = input->to(DEV_NPU);
 
     
     uint16_t* input_ptr = static_cast<uint16_t*>(input->data_ptr);
@@ -580,22 +579,16 @@ std::shared_ptr<Tensor> MatmulLayerNPUImpl::Forward(std::shared_ptr<Tensor> inpu
 
     spdlog::debug("MatmulLayerNPUImpl::Forward m {} n {} k {}", ctx.cur_size, n, k);
 
-    npu_matmul_nz_layer((void*)output_ptr, (void*)input_ptr, (void*)weight, ctx.cur_size, n, k, DT_FLOAT16, ctx.npu_stream);
-    CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
-
-    /*
-    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
-    weight_map((Eigen::half*)(weight), k, n);
-
     {
-        Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-        Eigen::array<Eigen::Index, 2> print_extents = {k, std::min(n, size_t(128))};
-        Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = weight_map.slice(print_offsets, print_extents);
-        std::cout << "weight_map output \n" << print_slice << "\n";    
+        APP_PROFILE("MatmulLayer", fmt::format("m {} n {} k {}", ctx.cur_size, n, k).c_str(),
+                            ctx.npu_stream, &ctx.model->profiler, ctx.model->is_profiling);
+        npu_matmul_nz_layer((void*)output_ptr, (void*)input_ptr, (void*)weight, ctx.cur_size, n, k, DT_FLOAT16, ctx.npu_stream);
     }
-    */
+    if (ctx.model->debug_print) {
+        CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
+    }
 
-    return output->to(DEV_CPU);
+    return output;
 }
 
 bool MatmulLayerNPUImpl::Init(Llama2Model* model, const std::string& weight_path, size_t n, size_t k) {
@@ -610,21 +603,15 @@ bool MatmulLayerNPUImpl::Init(Llama2Model* model, const std::string& weight_path
         spdlog::critical("n {} not aligned to 16", n);
         return false;
     }
-    size_t n1 = n / 16;
-    weight_size = sizeof(uint16_t) * n * k;
-    uint8_t* mm_weight_new = (uint8_t*)malloc(weight_size);
 
-    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>> 
-    input_map((Eigen::half*)weight, n1, 16, k);
 
-    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>> 
-    output_map((Eigen::half*)mm_weight_new, n1, k, 16);
+    void* tmp_dev_weight;
+    CHECK_ACL(aclrtMalloc((void **)&tmp_dev_weight, weight_size, ACL_MEM_MALLOC_HUGE_FIRST));
 
-    // transpose
-    output_map = input_map.shuffle(Eigen::array<int, 3>({0,2,1}));
+    CHECK_ACL(aclrtMemcpy(tmp_dev_weight, weight_size, weight, weight_size, ACL_MEMCPY_HOST_TO_DEVICE));
+    
     
     free(weight);
-
     weight = nullptr;
     CHECK_ACL(aclrtMalloc((void **)&weight, weight_size, ACL_MEM_MALLOC_HUGE_FIRST));
 
@@ -633,8 +620,10 @@ bool MatmulLayerNPUImpl::Init(Llama2Model* model, const std::string& weight_path
         return false;
     }
 
-    CHECK_ACL(aclrtMemcpy(weight, weight_size, mm_weight_new, weight_size, ACL_MEMCPY_HOST_TO_DEVICE));
-    free(mm_weight_new);
+    npu_mamtul_weight_transpose_layer(weight, tmp_dev_weight, n, k, DT_FLOAT16, model->model_stream);
+    CHECK_ACL(aclrtSynchronizeStream(model->model_stream));
+    CHECK_ACL(aclrtFree(tmp_dev_weight));
+
     return true;
 }
 

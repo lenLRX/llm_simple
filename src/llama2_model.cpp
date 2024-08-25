@@ -13,8 +13,8 @@
 #include "util.h"
 
 
-Llama2InferenceCtx::Llama2InferenceCtx(int cur_pos, int prev_pos)
-:cur_pos(cur_pos), prev_pos(prev_pos) {
+Llama2InferenceCtx::Llama2InferenceCtx(Llama2Model* model, int cur_pos, int prev_pos)
+:model(model), cur_pos(cur_pos), prev_pos(prev_pos) {
     cur_size = cur_pos - prev_pos;
 }
 
@@ -43,6 +43,7 @@ bool Llama2Model::Init() {
     causual_mask_layer.Init(this);
     transformer_layers.resize(n_layers);
     for (int i = 0; i < n_layers; ++i) {
+        spdlog::info("loading layer {}/{}", i, n_layers);
         transformer_layers[i].Init(this, i);
     }
 
@@ -55,12 +56,10 @@ bool Llama2Model::Init() {
 
 
 std::string Llama2Model::Forward(const std::string& input_seq) {
-    const int max_gen_len = 8; // TODO
     auto tokens = tokenizer.Encode(input_seq, true, false);
     int input_token_size = tokens.size();
-    const int total_len = std::min(max_seq_len, input_token_size + max_gen_len);
-    spdlog::info("Llama2Model::Forward input \"{}\" promt size {} token_size {}",  input_seq, input_token_size, total_len);
-    tokens.resize(total_len, tokenizer.pad_id);
+    spdlog::info("Llama2Model::Forward input \"{}\" promt size {} token_size {}",  input_seq, input_token_size, max_seq_len);
+    tokens.resize(max_seq_len, tokenizer.pad_id);
 
     int output_seq_len = input_token_size;
 
@@ -73,19 +72,21 @@ std::string Llama2Model::Forward(const std::string& input_seq) {
 
     int prev_pos = 0;
 
-    for (int cur_pos = input_token_size; cur_pos < total_len; ++cur_pos) {
+    for (int cur_pos = input_token_size; cur_pos < max_seq_len; ++cur_pos) {
         spdlog::info("cur_pos {} prev_pos {}",  cur_pos, prev_pos);
-        Llama2InferenceCtx ctx(cur_pos, prev_pos);
+        Llama2InferenceCtx ctx(this, cur_pos, prev_pos);
         if (device_type == DEV_NPU) {
             ctx.npu_stream = model_stream;
         }
         auto input_token = Tensor::MakeCPUTensor(ctx.cur_size, DT_UINT32);
         memcpy(input_token->data_ptr, tokens.data() + prev_pos, sizeof(uint32_t) * ctx.cur_size);
+        input_token = input_token->to(device_type);
         auto h = embedding_layer.Forward(input_token, ctx);
 
-        {
+        if (debug_print) {
+            auto print_h = h->to(DEV_CPU);
             Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
-            embed_map(static_cast<Eigen::half*>(h->data_ptr), ctx.cur_size, hidden_dim);
+            embed_map(static_cast<Eigen::half*>(print_h->data_ptr), ctx.cur_size, hidden_dim);
 
             Eigen::array<Eigen::Index, 2> offsets = {0, 0};
             Eigen::array<Eigen::Index, 2> extents = {ctx.cur_size, 4};
@@ -100,21 +101,25 @@ std::string Llama2Model::Forward(const std::string& input_seq) {
         for (int i = 0; i < n_layers; ++i) {
             h = transformer_layers[i].Forward(h, causlmask, ctx);
 
-            Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
-            h_map(static_cast<Eigen::half*>(h->data_ptr), ctx.cur_size, hidden_dim);
-            Eigen::array<Eigen::Index, 2> offsets = {0, 0};
-            Eigen::array<Eigen::Index, 2> extents = {ctx.cur_size, 4};
-            Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = h_map.slice(offsets, extents);
-            std::cout << "h_map " << i <<" output \n" << print_slice << "\n";
+            if (debug_print) {
+                auto print_h = h->to(DEV_CPU);
+                Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
+                h_map(static_cast<Eigen::half*>(print_h->data_ptr), ctx.cur_size, hidden_dim);
+                Eigen::array<Eigen::Index, 2> offsets = {0, 0};
+                Eigen::array<Eigen::Index, 2> extents = {ctx.cur_size, 4};
+                Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = h_map.slice(offsets, extents);
+                std::cout << "h_map " << i <<" output \n" << print_slice << "\n";
+            }
             //break;
         }
         //break;
 
         h = last_norm.Forward(h, ctx);
 
-        {
+        if (debug_print) {
+            auto print_h = h->to(DEV_CPU);
             Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
-            h_map(static_cast<Eigen::half*>(h->data_ptr), ctx.cur_size, hidden_dim);
+            h_map(static_cast<Eigen::half*>(print_h->data_ptr), ctx.cur_size, hidden_dim);
             Eigen::array<Eigen::Index, 2> offsets = {0, 0};
             Eigen::array<Eigen::Index, 2> extents = {ctx.cur_size, 288};
             Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = h_map.slice(offsets, extents);
@@ -124,23 +129,34 @@ std::string Llama2Model::Forward(const std::string& input_seq) {
 
         h = last_mm.Forward(h, ctx);
 
-        {
+        if (debug_print) {
+            auto print_h = h->to(DEV_CPU);
             Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
-            h_map(static_cast<Eigen::half*>(h->data_ptr), ctx.cur_size, tokenizer.n_words);
+            h_map(static_cast<Eigen::half*>(print_h->data_ptr), ctx.cur_size, tokenizer.n_words);
             Eigen::array<Eigen::Index, 2> offsets = {0, 0};
             Eigen::array<Eigen::Index, 2> extents = {ctx.cur_size, 4};
             Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = h_map.slice(offsets, extents);
             std::cout << "h_map last mm output \n" << print_slice << "\n";
         }
 
+        if (device_type == DEV_NPU) {
+            CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
+        }
+
+        h = h->to(DEV_CPU);
         auto max_pos = argmax_layer.Forward(h, ctx);
         int next_tok = static_cast<int32_t*>(max_pos->data_ptr)[ctx.cur_size-1];
         if (next_tok == tokenizer.eos_id) {
             break;
         }
-        spdlog::info("cur_pos {} total_len {} next_tok {}",  cur_pos, total_len, next_tok);
+        spdlog::info("cur_pos {} max_seq_len {} next_tok {}",  cur_pos, max_seq_len, next_tok);
         tokens[cur_pos] = next_tok;
         ++output_seq_len;
+
+        auto output_token = tokens;
+        output_token.resize(output_seq_len);
+        auto next_tok_str = tokenizer.Decode(output_token);
+        spdlog::info("Llama2Model::Forward input \"{}\" output string {}", input_seq, next_tok_str);
 
         prev_pos = cur_pos;
     }

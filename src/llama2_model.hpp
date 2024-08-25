@@ -10,6 +10,7 @@
 
 #include "tokenizer.hpp"
 #include "device.hpp"
+#include "profiling.hpp"
 
 
 class Llama2Config {
@@ -25,8 +26,8 @@ class Llama2Model;
 
 class Llama2InferenceCtx {
 public:
-    Llama2InferenceCtx(int cur_pos, int prev_pos);
-    bool debug_print = false;
+    Llama2InferenceCtx(Llama2Model* model, int cur_pos, int prev_pos);
+    Llama2Model* model;
     int cur_pos;
     int prev_pos;
     int cur_size;
@@ -250,7 +251,7 @@ public:
     int n_heads;
     int n_layers;
     int multiple_of;
-    int max_seq_len{8192};
+    int max_seq_len;
     float norm_eps;
 
     aclrtStream model_stream;
@@ -263,6 +264,10 @@ public:
     ArgMaxLayer argmax_layer;
 
     float* freq_cis{nullptr};
+
+    bool debug_print{false};
+    bool is_profiling{false};
+    AppProfiler profiler;
 };
 
 
