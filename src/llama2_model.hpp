@@ -138,6 +138,30 @@ public:
     ArgMaxLayerImpl* impl{nullptr};
 };
 
+class SampleTopPLayerImpl {
+public:
+    virtual ~SampleTopPLayerImpl();
+    virtual int
+        Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) = 0;
+    virtual bool Init(Llama2Model* model);
+    virtual void UnInit();
+
+    float temperature;
+    float top_p;
+    size_t vocab_size;
+};
+
+
+class SampleTopPLayer {
+public:
+    ~SampleTopPLayer();
+    virtual int
+        Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx);
+    bool Init(Llama2Model* model);
+    void UnInit();
+    SampleTopPLayerImpl* impl{nullptr};
+};
+
 
 class SoftmaxLayerImpl {
 public:
@@ -244,7 +268,7 @@ public:
 
     bool InitFreqCIS();
 
-    std::string Forward(const std::string& input_seq);
+    void TextCompletion(const std::string& input_seq);
 
     DeviceType device_type;
     int hidden_dim;
@@ -253,6 +277,8 @@ public:
     int multiple_of;
     int max_seq_len;
     float norm_eps;
+    float temperature{0.0f};
+    float top_p{0.0f};
 
     aclrtStream model_stream;
 
@@ -262,6 +288,7 @@ public:
     RMSNormLayer last_norm;
     MatmulLayer last_mm;
     ArgMaxLayer argmax_layer;
+    SampleTopPLayer top_p_layer;
 
     float* freq_cis{nullptr};
 

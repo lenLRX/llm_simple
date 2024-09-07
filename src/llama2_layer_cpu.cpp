@@ -1,6 +1,8 @@
 #include <sstream>
 #include <algorithm>
+#include <vector>
 #include <iostream>
+#include <random>
 
 #include <boost/filesystem.hpp>
 #include <spdlog/spdlog.h>
@@ -718,6 +720,82 @@ bool RoPELayerCPUImpl::Init(Llama2Model* model, const std::string& weight_path) 
 }
 
 void RoPELayerCPUImpl::UnInit() {
+
+}
+
+
+SampleTopPLayerCPUImpl::~SampleTopPLayerCPUImpl() {
+
+}
+
+int
+SampleTopPLayerCPUImpl::Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) {
+    auto output_weight = Tensor::MakeCPUTensor(vocab_size, DT_FLOAT32);
+
+    float* weight_ptr = static_cast<float*>(output_weight->data_ptr);
+
+    Eigen::TensorMap<Eigen::Tensor<float, 1, Eigen::RowMajor|Eigen::DontAlign>> 
+    output_weight_map(weight_ptr, vocab_size);
+
+    Eigen::half* input_ptr = static_cast<Eigen::half*>(input->data_ptr);
+    input_ptr = input_ptr + (ctx.cur_size - 1) * vocab_size;
+
+    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 1, Eigen::RowMajor|Eigen::DontAlign>> 
+    input_map(input_ptr, vocab_size);
+
+    auto input_f32 = input_map.cast<float>();
+    auto input_f32_scale = input_f32 / input_f32.constant(temperature);
+    auto input_max = input_f32_scale.maximum(Eigen::array<int, 1>{0}).eval()
+        .reshape(Eigen::array<int, 1>{1}).broadcast(Eigen::array<int, 1>{vocab_size});
+
+    auto input_diff = (input_f32_scale - input_max).exp().eval();
+
+    auto input_sum = input_diff.sum(Eigen::array<int, 1>{0}).eval()
+        .reshape(Eigen::array<int, 1>{1}).broadcast(Eigen::array<int, 1>{vocab_size});
+
+    output_weight_map = input_diff/input_sum;
+
+    std::vector<std::pair<float, int>> prob_index;
+    prob_index.reserve(vocab_size);
+    for (int i = 0; i < vocab_size; ++i) {
+        prob_index.emplace_back(weight_ptr[i], i);
+    }
+
+    std::sort(prob_index.begin(), prob_index.end(), [](const auto& lhs, const auto& rhs)->bool {
+        return lhs.first > rhs.first;
+    });
+
+    std::vector<float> prob_weights;
+    prob_weights.reserve(vocab_size);
+
+    float cum_prob = 0.0f;
+    int count = 0;
+    //std::cout << "sample top_p " << top_p << "\n";
+    for (int i = 0; i < vocab_size; ++i) {
+        float curr_prob = prob_index[i].first;
+        //if (i < 10)
+        //std::cout << curr_prob << ", ";
+        cum_prob += curr_prob;
+        prob_weights.emplace_back(curr_prob);
+        if (cum_prob > top_p) {
+            count = i + 1;
+            break;
+        }
+    }
+    //std::cout << "\n";
+    
+
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::discrete_distribution<int> d(prob_weights.begin(), prob_weights.begin() + count);
+    return prob_index[d(gen)].second;
+}
+
+bool SampleTopPLayerCPUImpl::Init(Llama2Model* model) {
+    return SampleTopPLayerImpl::Init(model);
+}
+
+void SampleTopPLayerCPUImpl::UnInit() {
 
 }
 

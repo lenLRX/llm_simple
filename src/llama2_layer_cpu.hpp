@@ -98,3 +98,11 @@ public:
     virtual void UnInit() override;
 };
 
+class SampleTopPLayerCPUImpl: public SampleTopPLayerImpl {
+public:
+    virtual ~SampleTopPLayerCPUImpl();
+    virtual int
+        Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) override;
+    virtual bool Init(Llama2Model* model) override;
+    virtual void UnInit() override;
+};

@@ -50,12 +50,13 @@ bool Llama2Model::Init() {
     last_norm.Init(this, -1, false, true);
     last_mm.Init(this, (boost::filesystem::path(config.model_path) / "lm_head.weight.bin").c_str(), tokenizer.n_words, hidden_dim);
     argmax_layer.Init(this);
+    top_p_layer.Init(this);
     
     return true;
 }
 
 
-std::string Llama2Model::Forward(const std::string& input_seq) {
+void Llama2Model::TextCompletion(const std::string& input_seq) {
     auto tokens = tokenizer.Encode(input_seq, true, false);
     int input_token_size = tokens.size();
     spdlog::info("Llama2Model::Forward input \"{}\" promt size {} token_size {}",  input_seq, input_token_size, max_seq_len);
@@ -63,17 +64,20 @@ std::string Llama2Model::Forward(const std::string& input_seq) {
 
     int output_seq_len = input_token_size;
 
+    /*
     std::cout << "curr token: ";
     for (int i = 0; i <input_token_size; ++i) {
         std::cout << tokens[i] << " ";
     }
 
     std::cout << "\n";
+    */
+    std::cout << "input prompt:\n" << input_seq;
 
     int prev_pos = 0;
 
     for (int cur_pos = input_token_size; cur_pos < max_seq_len; ++cur_pos) {
-        spdlog::info("cur_pos {} prev_pos {}",  cur_pos, prev_pos);
+        spdlog::debug("cur_pos {} prev_pos {}",  cur_pos, prev_pos);
         Llama2InferenceCtx ctx(this, cur_pos, prev_pos);
         if (device_type == DEV_NPU) {
             ctx.npu_stream = model_stream;
@@ -117,6 +121,7 @@ std::string Llama2Model::Forward(const std::string& input_seq) {
         h = last_norm.Forward(h, ctx);
 
         if (debug_print) {
+            CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
             auto print_h = h->to(DEV_CPU);
             Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
             h_map(static_cast<Eigen::half*>(print_h->data_ptr), ctx.cur_size, hidden_dim);
@@ -130,6 +135,7 @@ std::string Llama2Model::Forward(const std::string& input_seq) {
         h = last_mm.Forward(h, ctx);
 
         if (debug_print) {
+            CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
             auto print_h = h->to(DEV_CPU);
             Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
             h_map(static_cast<Eigen::half*>(print_h->data_ptr), ctx.cur_size, tokenizer.n_words);
@@ -144,31 +150,39 @@ std::string Llama2Model::Forward(const std::string& input_seq) {
         }
 
         h = h->to(DEV_CPU);
-        auto max_pos = argmax_layer.Forward(h, ctx);
-        int next_tok = static_cast<int32_t*>(max_pos->data_ptr)[ctx.cur_size-1];
+        int next_tok;
+        if (temperature > 0.0f) {
+            next_tok = top_p_layer.Forward(h, ctx);
+        }
+        else {
+            auto max_pos = argmax_layer.Forward(h, ctx);
+            next_tok = static_cast<int32_t*>(max_pos->data_ptr)[ctx.cur_size-1];
+        }
         if (next_tok == tokenizer.eos_id) {
             break;
         }
-        spdlog::info("cur_pos {} max_seq_len {} next_tok {}",  cur_pos, max_seq_len, next_tok);
+        spdlog::debug("cur_pos {} max_seq_len {} next_tok {}",  cur_pos, max_seq_len, next_tok);
         tokens[cur_pos] = next_tok;
         ++output_seq_len;
 
         auto output_token = tokens;
         output_token.resize(output_seq_len);
         auto next_tok_str = tokenizer.Decode(output_token);
-        spdlog::info("Llama2Model::Forward input \"{}\" output string {}", input_seq, next_tok_str);
+        spdlog::debug("Llama2Model::Forward input \"{}\" output string {}", input_seq, next_tok_str);
+
+        std::cout << tokenizer.Decode({next_tok}) << std::flush;
 
         prev_pos = cur_pos;
     }
+
+    std::cout << std::endl;
 
     auto output_token = tokens;
     output_token.resize(output_seq_len);
 
     auto next_tok_str = tokenizer.Decode(output_token);
 
-    spdlog::info("Llama2Model::Forward input \"{}\" output string {}", input_seq, next_tok_str);
-
-    return next_tok_str;
+    spdlog::debug("Llama2Model::Forward input \"{}\" output string {}", input_seq, next_tok_str);
 }
 
 bool Llama2Model::InitFreqCIS() {
@@ -450,6 +464,54 @@ bool ArgMaxLayer::Init(Llama2Model* model) {
 void ArgMaxLayer::UnInit() {
 
 }
+
+
+SampleTopPLayerImpl::~SampleTopPLayerImpl() {
+
+}
+
+
+bool SampleTopPLayerImpl::Init(Llama2Model* model) {
+    temperature = model->temperature;
+    top_p = model->top_p;
+    vocab_size = model->tokenizer.n_words;
+    return true;
+}
+
+void SampleTopPLayerImpl::UnInit() {
+
+}
+
+
+SampleTopPLayer::~SampleTopPLayer() {
+
+}
+
+int
+SampleTopPLayer::Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) {
+    return impl->Forward(input, ctx);
+}
+
+bool SampleTopPLayer::Init(Llama2Model* model) {
+    switch (model->device_type)
+    {
+    case DEV_NPU:
+    case DEV_CPU:
+        impl = new SampleTopPLayerCPUImpl();
+        break;
+    
+    default:
+        spdlog::critical("invalid device type");
+        return false;
+        break;
+    }
+    return impl->Init(model);
+}
+
+void SampleTopPLayer::UnInit() {
+
+}
+
 
 
 SoftmaxLayerImpl::~SoftmaxLayerImpl() {

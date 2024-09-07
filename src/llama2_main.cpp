@@ -41,7 +41,10 @@ int main(int argc, char** argv) {
         ("prompt", po::value<std::string>(&str_prompt)->required(), "prompt str")
         ("log_level", po::value<std::string>(&str_level), "log level:[trace,debug,info,warning,error,critical,off]")
         ("profiling_output", po::value<std::string>(&profiling_output_path), "profiling_output_file xx.json")
-        ("debug_print", po::value<bool>(&model.debug_print), "print tensor value to debug");
+        ("debug_print", po::value<bool>(&model.debug_print), "print tensor value to debug")
+        ("temperature", po::value<float>(&model.temperature)->default_value(0.6), "sample temperature, default: 0.6")
+        ("top_p", po::value<float>(&model.top_p)->default_value(0.9), "sample top_p, default: 0.9")
+        ("i", "interactive mode");
 
 
         po::variables_map vm;
@@ -122,7 +125,14 @@ int main(int argc, char** argv) {
             model.is_profiling = true;
         }
 
-        model.Forward(str_prompt);
+        // interactive mode
+        if (vm.count("i")) {
+
+        }
+        // text completion mode
+        else {
+            model.TextCompletion(str_prompt);
+        }
 
         if (vm.count("profiling_output")) {
             model.profiler.Finish();

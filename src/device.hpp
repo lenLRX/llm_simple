@@ -46,6 +46,7 @@ public:
     static std::shared_ptr<Tensor> MakeNPUTensor(size_t size, DataType dtype);
 
     std::shared_ptr<Tensor> to(DeviceType to_dev);
+    void to_file(const char* path);
 
     void* data_ptr{nullptr};
     size_t data_size;
