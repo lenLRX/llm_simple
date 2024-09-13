@@ -2,6 +2,8 @@
 #include <boost/filesystem.hpp>
 #include <spdlog/spdlog.h>
 #include <iostream>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <map>
 
@@ -27,8 +29,10 @@ int main(int argc, char** argv) {
         Llama2Model model;
         std::string str_device_type;
         std::string str_prompt;
+        std::string prompt_file_path;
         std::string str_level;
         std::string profiling_output_path;
+        std::string reverse_promt;
 
         po::options_description desc("llama2 inference options");
         desc.add_options()
@@ -38,12 +42,14 @@ int main(int argc, char** argv) {
         ("weight", po::value<std::string>(&model.config.model_path)->required(), "path to model weight")
         ("config", po::value<std::string>(&model.config.config_path)->required(), "path to model config")
         ("device_type", po::value<std::string>(&str_device_type)->required(), "device type, cpu/gpu")
-        ("prompt", po::value<std::string>(&str_prompt)->required(), "prompt str")
+        ("prompt", po::value<std::string>(&str_prompt), "prompt str")
+        ("prompt_file", po::value<std::string>(&prompt_file_path), "prompt file")
         ("log_level", po::value<std::string>(&str_level), "log level:[trace,debug,info,warning,error,critical,off]")
         ("profiling_output", po::value<std::string>(&profiling_output_path), "profiling_output_file xx.json")
         ("debug_print", po::value<bool>(&model.debug_print), "print tensor value to debug")
         ("temperature", po::value<float>(&model.temperature)->default_value(0.6), "sample temperature, default: 0.6")
         ("top_p", po::value<float>(&model.top_p)->default_value(0.9), "sample top_p, default: 0.9")
+        ("reverse_promt", po::value<std::string>(&reverse_promt), "reverse_promt in interactive mode")
         ("i", "interactive mode");
 
 
@@ -67,6 +73,20 @@ int main(int argc, char** argv) {
         else {
             // default level is info
             spdlog::set_level(spdlog::level::info);
+        }
+
+        if (vm.count("prompt_file")) {
+            if (vm.count("prompt")) {
+                spdlog::warn("prompt_file overwrite prompt string");
+            }
+            std::ifstream prompt_file(prompt_file_path.c_str());
+            if (!prompt_file) {
+                spdlog::critical("failed to open prompt_file {}", prompt_file_path);
+                return 1;
+            }
+            std::stringstream ss;
+            ss << prompt_file.rdbuf();
+            str_prompt = ss.str();
         }
 
         if (str_device_type == "cpu") {
@@ -127,7 +147,11 @@ int main(int argc, char** argv) {
 
         // interactive mode
         if (vm.count("i")) {
-
+            if (!vm.count("reverse_promt")) {
+                spdlog::critical("reverse_promt must be specified in interactive mode");
+                return 1;
+            }
+            model.Chat(str_prompt, reverse_promt);
         }
         // text completion mode
         else {

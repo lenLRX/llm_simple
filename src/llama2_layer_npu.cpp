@@ -7,7 +7,7 @@
 #include "llama2_layer_npu.hpp"
 #include "acl_util.hpp"
 #include "util.h"
-#include "npu_ops/npu_ops.h"
+#include "npu_ops.h"
 #include "profiling.hpp"
 
 

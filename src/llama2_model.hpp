@@ -26,11 +26,11 @@ class Llama2Model;
 
 class Llama2InferenceCtx {
 public:
-    Llama2InferenceCtx(Llama2Model* model, int cur_pos, int prev_pos);
+    Llama2InferenceCtx(Llama2Model* model, size_t cur_pos, size_t prev_pos);
     Llama2Model* model;
-    int cur_pos;
-    int prev_pos;
-    int cur_size;
+    size_t cur_pos;
+    size_t prev_pos;
+    size_t cur_size;
     aclrtStream npu_stream{nullptr};
 };
 
@@ -268,7 +268,9 @@ public:
 
     bool InitFreqCIS();
 
+    void Chat(const std::string& input_seq, const std::string& reverse_prompt);
     void TextCompletion(const std::string& input_seq);
+    std::string GetCurrTokenString(size_t prev_string_size, const std::vector<int>& tokens);
 
     DeviceType device_type;
     int hidden_dim;

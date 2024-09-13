@@ -38,7 +38,7 @@ std::string Tokenizer::Decode(const std::vector<int32_t>& ids) {
     std::string result;
     auto status = processor.Decode(ids, &result);
     if (!status.ok()) {
-        spdlog::critical("failed to init tokenizer from path {}", status.error_message());
+        spdlog::critical("failed to Decode {}", status.error_message());
     }
     return result;
 }
