@@ -7,5 +7,5 @@
 # 运行
 *请将转化后的权重文件夹，配置文件, tokenizer文件拷贝到设备上并修改bash文件中对应的路径*
 
-1. ```bash scripts/example_text_completion_llama2_7B_fp16_orangepi.sh```
-2. ```bash bash scripts/example_text_completion_llama2_7B_fp16_orangepi.sh```
+1. ```bash scripts/example_chat_llama2_7B_fp16_orangepi.sh```
+2. ```bash scripts/example_text_completion_llama2_7B_fp16_orangepi.sh```
