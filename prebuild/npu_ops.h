@@ -36,6 +36,7 @@ void npu_rope_layer(void* output_q_dev,
                          int cur_size,
                          int n_heads,
                          int hidden_dim,
+                         bool is_neox_style,
                          DataType dt,
                          aclrtStream& stream);
 
@@ -120,6 +121,17 @@ void npu_matmul_nz_layer(void* output_dev,
 
 void npu_mamtul_weight_transpose_layer(void* output_dev,
                          void* input,
+                         int n,
+                         int k,
+                         DataType dt,
+                         aclrtStream& stream);
+
+void npu_matmul_nz_awq_4bit_layer(void* output_dev,
+                         void* lhs_dev,
+                         void* weight_dev,
+                         void* zero_dev,
+                         void* scale_dev,
+                         int m,
                          int n,
                          int k,
                          DataType dt,

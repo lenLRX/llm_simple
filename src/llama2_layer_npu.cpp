@@ -193,7 +193,7 @@ RoPELayerNPUImpl::Forward(std::shared_ptr<Tensor> input_q, std::shared_ptr<Tenso
     APP_PROFILE("RoPELayer", fmt::format("pos: {} seq len: {} n_head {} head_dim {} hidden_dim {}", ctx.prev_pos, ctx.cur_size, n_heads, hidden_dim/n_heads, hidden_dim).c_str(),
         ctx.npu_stream, &ctx.model->profiler, ctx.model->is_profiling);
     npu_rope_layer(output_q_ptr, output_k_ptr, freqs_cis, input_q_ptr, input_k_ptr,
-                    ctx.prev_pos, ctx.cur_size, n_heads, hidden_dim, DT_FLOAT16, ctx.npu_stream);
+                    ctx.prev_pos, ctx.cur_size, n_heads, hidden_dim, rope_is_neox_style, DT_FLOAT16, ctx.npu_stream);
     if (ctx.model->debug_print) {
         CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
     }
@@ -230,7 +230,7 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
         pre_norm_out_map(static_cast<Eigen::half*>(pre_norm_out_cpu->data_ptr), ctx.cur_size, hidden_dim);
 
         Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-        Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, 4};
+        Eigen::array<Eigen::Index, 2> print_extents = {static_cast<Eigen::Index>(ctx.cur_size), 4};
         Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = pre_norm_out_map.slice(print_offsets, print_extents);
         std::cout << "pre_norm output \n" << print_slice << "\n";
     }
@@ -242,9 +242,20 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
         q_map(static_cast<Eigen::half*>(q_cpu->data_ptr), ctx.cur_size, hidden_dim);
 
         Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-        Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, 4};
+        Eigen::array<Eigen::Index, 2> print_extents = {static_cast<Eigen::Index>(ctx.cur_size), 4};
         Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = q_map.slice(print_offsets, print_extents);
         std::cout << "q emb input \n" << print_slice << "\n";
+    }
+
+    if (ctx.model->debug_print) {
+        auto k_cpu = k->to(DEV_CPU);
+        Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
+        k_map(static_cast<Eigen::half*>(k_cpu->data_ptr), ctx.cur_size, hidden_dim);
+
+        Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
+        Eigen::array<Eigen::Index, 2> print_extents = {static_cast<Eigen::Index>(ctx.cur_size), 4};
+        Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = k_map.slice(print_offsets, print_extents);
+        std::cout << "k emb input \n" << print_slice << "\n";
     }
 
     spdlog::debug("rope_emb.Forward");
@@ -262,7 +273,7 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
         q_emb_map(static_cast<Eigen::half*>(q_emb->data_ptr), ctx.cur_size, n_heads, head_dim);
 
         Eigen::array<Eigen::Index, 3> print_offsets = {0, 0, 0};
-        Eigen::array<Eigen::Index, 3> print_extents = {ctx.cur_size, 4, 4};
+        Eigen::array<Eigen::Index, 3> print_extents = {static_cast<Eigen::Index>(ctx.cur_size), 4, 4};
         Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>  print_slice = q_emb_map.slice(print_offsets, print_extents);
         std::cout << "q emb output \n" << print_slice << "\n";    
     }
@@ -276,7 +287,7 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
         Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>> 
         k_emb_map(static_cast<Eigen::half*>(k_emb->data_ptr), ctx.cur_size, n_heads, head_dim);
         Eigen::array<Eigen::Index, 3> print_offsets = {0, 0, 0};
-        Eigen::array<Eigen::Index, 3> print_extents = {ctx.cur_size, 4, 4};
+        Eigen::array<Eigen::Index, 3> print_extents = {static_cast<Eigen::Index>(ctx.cur_size), 4, 4};
         Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>  print_slice = k_emb_map.slice(print_offsets, print_extents);
         std::cout << "k emb output \n" << print_slice << "\n";    
     }
@@ -331,7 +342,7 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
         Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>>
         q_matmul_k_map(static_cast<Eigen::half*>(q_matmul_k->data_ptr), n_heads, ctx.cur_size, ctx.cur_pos);
         Eigen::array<Eigen::Index, 3> print_offsets = {0, 0, 0};
-        Eigen::array<Eigen::Index, 3> print_extents = {n_heads, ctx.cur_size, ctx.cur_pos};
+        Eigen::array<Eigen::Index, 3> print_extents = {static_cast<Eigen::Index>(n_heads), static_cast<Eigen::Index>(ctx.cur_size), static_cast<Eigen::Index>(ctx.cur_pos)};
         Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>  print_slice = q_matmul_k_map.slice(print_offsets, print_extents);
         std::cout << "score output \n" << print_slice << "\n";
         //q_matmul_k_cpu->to_file("first_qk.data");
@@ -347,7 +358,7 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
         Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>> 
         softmax_qk_map(static_cast<Eigen::half*>(softmax_qk_cpu->data_ptr), n_heads, ctx.cur_size, ctx.cur_pos);
         Eigen::array<Eigen::Index, 3> print_offsets = {0, 0, 0};
-        Eigen::array<Eigen::Index, 3> print_extents = {n_heads, ctx.cur_size, ctx.cur_pos};
+        Eigen::array<Eigen::Index, 3> print_extents = {static_cast<Eigen::Index>(n_heads), static_cast<Eigen::Index>(ctx.cur_size), static_cast<Eigen::Index>(ctx.cur_pos)};
         Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>  print_slice = softmax_qk_map.slice(print_offsets, print_extents);
         std::cout << "score softmax output \n" << print_slice << "\n";
         //softmax_qk_cpu->to_file("first_softmax_qk.data");
@@ -373,7 +384,7 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
         Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
         tmp_output_tensor_map(static_cast<Eigen::half*>(tmp_output_tensor_cpu->data_ptr), ctx.cur_size, hidden_dim);
         Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-        Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, 16};
+        Eigen::array<Eigen::Index, 2> print_extents = {static_cast<Eigen::Index>(ctx.cur_size), 16};
         Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = tmp_output_tensor_map.slice(print_offsets, print_extents);
         std::cout << "proj_o input \n" << print_slice << "\n";
         //tmp_output_tensor_cpu->to_file("xv_output.data");
@@ -387,7 +398,7 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
         Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
         output_map(static_cast<Eigen::half*>(output_cpu->data_ptr), ctx.cur_size, hidden_dim);
         Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-        Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, 4};
+        Eigen::array<Eigen::Index, 2> print_extents = {static_cast<Eigen::Index>(ctx.cur_size), 4};
         Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = output_map.slice(print_offsets, print_extents);
         std::cout << "score output \n" << print_slice << "\n";
         //output_cpu->to_file("first_output.data");
@@ -409,7 +420,7 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
         Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
         output_add_input_map(static_cast<Eigen::half*>(output_add_input_cpu->data_ptr), ctx.cur_size, hidden_dim);
         Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-        Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, 4};
+        Eigen::array<Eigen::Index, 2> print_extents = {static_cast<Eigen::Index>(ctx.cur_size), 4};
         Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = output_add_input_map.slice(print_offsets, print_extents);
         std::cout << "z output \n" << print_slice << "\n";    
     }
@@ -422,7 +433,7 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
         Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
         post_norm_out_map(static_cast<Eigen::half*>(post_norm_out_cpu->data_ptr), ctx.cur_size, hidden_dim);
         Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-        Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, 4};
+        Eigen::array<Eigen::Index, 2> print_extents = {static_cast<Eigen::Index>(ctx.cur_size), 4};
         Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = post_norm_out_map.slice(print_offsets, print_extents);
         std::cout << "post_norm output \n" << print_slice << "\n";    
     }
@@ -435,7 +446,7 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
         Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
         w1_h_map(static_cast<Eigen::half*>(w1_h->data_ptr), ctx.cur_size, ffn_hidden);
         Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-        Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, 4};
+        Eigen::array<Eigen::Index, 2> print_extents = {static_cast<Eigen::Index>(ctx.cur_size), 4};
         Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = w1_h_map.slice(print_offsets, print_extents);
         std::cout << "gate_proj output \n" << print_slice << "\n";    
     }
@@ -461,7 +472,7 @@ std::shared_ptr<Tensor> Llamma2TransformerLayerNPUImpl::Forward(std::shared_ptr<
         silu_out_mul_w3_map(static_cast<Eigen::half*>(silu_out_mul_w3_cpu->data_ptr), ctx.cur_size, ffn_hidden);
         // bug here
         Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-        Eigen::array<Eigen::Index, 2> print_extents = {ctx.cur_size, 4};
+        Eigen::array<Eigen::Index, 2> print_extents = {static_cast<Eigen::Index>(ctx.cur_size), 4};
         Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>  print_slice = silu_out_mul_w3_map.slice(print_offsets, print_extents);
         std::cout << "silu output \n" << print_slice << "\n";    
     }
@@ -506,27 +517,69 @@ bool Llamma2TransformerLayerNPUImpl::Init(Llama2Model* model, int layer_no) {
         return false;
     }
 
-    auto q_name = std::string("model.layers.") + std::to_string(layer_no) + ".self_attn.q_proj.weight.bin";
-    auto q_path = boost::filesystem::path(model->config.model_path) / q_name;
-    if (!q_proj.Init(model, q_path.string(), hidden_dim, hidden_dim)) {
-        return false;
-    }
-    auto k_name = std::string("model.layers.") + std::to_string(layer_no) + ".self_attn.k_proj.weight.bin";
-    auto k_path = boost::filesystem::path(model->config.model_path) / k_name;
-    if (!k_proj.Init(model, k_path.string(), hidden_dim, hidden_dim)) {
-        return false;
-    }
+    if (model->q_type == QuantType::NoQuant) {
+        auto q_name = fmt::format("model.layers.{}.self_attn.q_proj.weight.bin", layer_no);
+        auto q_path = boost::filesystem::path(model->config.model_path) / q_name;
+        if (!q_proj.Init(model, q_path.string(), hidden_dim, hidden_dim)) {
+            return false;
+        }
+        auto k_name = fmt::format("model.layers.{}.self_attn.k_proj.weight.bin", layer_no);
+        auto k_path = boost::filesystem::path(model->config.model_path) / k_name;
+        if (!k_proj.Init(model, k_path.string(), hidden_dim, hidden_dim)) {
+            return false;
+        }
 
-    auto v_name = std::string("model.layers.") + std::to_string(layer_no) + ".self_attn.v_proj.weight.bin";
-    auto v_path = boost::filesystem::path(model->config.model_path) / v_name;
-    if (!v_proj.Init(model, v_path.string(), hidden_dim, hidden_dim)) {
-        return false;
-    }
+        auto v_name = fmt::format("model.layers.{}.self_attn.v_proj.weight.bin", layer_no);
+        auto v_path = boost::filesystem::path(model->config.model_path) / v_name;
+        if (!v_proj.Init(model, v_path.string(), hidden_dim, hidden_dim)) {
+            return false;
+        }
 
-    auto o_name = std::string("model.layers.") + std::to_string(layer_no) + ".self_attn.o_proj.weight.bin";
-    auto o_path = boost::filesystem::path(model->config.model_path) / o_name;
-    if (!o_proj.Init(model, o_path.string(), hidden_dim, hidden_dim)) {
-        return false;
+        auto o_name = fmt::format("model.layers.{}.self_attn.o_proj.weight.bin", layer_no);
+        auto o_path = boost::filesystem::path(model->config.model_path) / o_name;
+        if (!o_proj.Init(model, o_path.string(), hidden_dim, hidden_dim)) {
+            return false;
+        }
+
+        auto gate_proj_name = fmt::format("model.layers.{}.mlp.gate_proj.weight.bin", layer_no);
+        auto gate_proj_path = boost::filesystem::path(model->config.model_path) / gate_proj_name;
+        if (!gate_proj.Init(model, gate_proj_path.string(), ffn_hidden, hidden_dim)) {
+            return false;
+        }
+
+        auto down_proj_name = fmt::format("model.layers.{}.mlp.down_proj.weight.bin", layer_no);
+        auto down_proj_path = boost::filesystem::path(model->config.model_path) / down_proj_name;
+        if (!down_proj.Init(model, down_proj_path.string(), hidden_dim, ffn_hidden)) {
+            return false;
+        }
+
+        auto up_proj_name = fmt::format("model.layers.{}.mlp.up_proj.weight.bin", layer_no);
+        auto up_proj_path = boost::filesystem::path(model->config.model_path) / up_proj_name;
+        if (!up_proj.Init(model, up_proj_path.string(), ffn_hidden, hidden_dim)) {
+            return false;
+        }
+    }
+    else if (model->q_type == QuantType::AWQ_4B) {
+#define INIT_AWQ_MM(layer, x, n, k) \
+        auto x##_weight_name = fmt::format("model.layers.{}." #layer "." #x "_proj.qweight.bin", layer_no); \
+        auto x##_zero_name = fmt::format("model.layers.{}." #layer "." #x "_proj.qzeros.bin", layer_no); \
+        auto x##_scale_name = fmt::format("model.layers.{}." #layer "." #x "_proj.scales.bin", layer_no); \
+        auto x##_weight_path = boost::filesystem::path(model->config.model_path) / x##_weight_name; \
+        auto x##_zero_path = boost::filesystem::path(model->config.model_path) / x##_zero_name; \
+        auto x##_scale_path = boost::filesystem::path(model->config.model_path) / x##_scale_name; \
+        if (!x##_proj.InitAWQ(model, x##_weight_path.string(), x##_zero_path.string(), x##_scale_path.string(), n, k, model->q_type)) { \
+            return false; \
+        }
+
+        INIT_AWQ_MM(self_attn, q, hidden_dim, hidden_dim);
+        INIT_AWQ_MM(self_attn, k, hidden_dim, hidden_dim);
+        INIT_AWQ_MM(self_attn, v, hidden_dim, hidden_dim);
+        INIT_AWQ_MM(self_attn, o, hidden_dim, hidden_dim);
+
+        INIT_AWQ_MM(mlp, gate, ffn_hidden, hidden_dim);
+        INIT_AWQ_MM(mlp, down, hidden_dim, ffn_hidden);
+        INIT_AWQ_MM(mlp, up, ffn_hidden, hidden_dim);
+
     }
 
     auto inv_freq_name = std::string("model.layers.") + std::to_string(layer_no) + ".self_attn.rotary_emb.inv_freq.bin";
@@ -541,24 +594,6 @@ bool Llamma2TransformerLayerNPUImpl::Init(Llama2Model* model, int layer_no) {
     }
 
     spdlog::debug("ffn_hidden dim: {}", ffn_hidden);
-
-    auto gate_proj_name = std::string("model.layers.") + std::to_string(layer_no) + ".mlp.gate_proj.weight.bin";
-    auto gate_proj_path = boost::filesystem::path(model->config.model_path) / gate_proj_name;
-    if (!gate_proj.Init(model, gate_proj_path.string(), ffn_hidden, hidden_dim)) {
-        return false;
-    }
-
-    auto down_proj_name = std::string("model.layers.") + std::to_string(layer_no) + ".mlp.down_proj.weight.bin";
-    auto down_proj_path = boost::filesystem::path(model->config.model_path) / down_proj_name;
-    if (!down_proj.Init(model, down_proj_path.string(), hidden_dim, ffn_hidden)) {
-        return false;
-    }
-
-    auto up_proj_name = std::string("model.layers.") + std::to_string(layer_no) + ".mlp.up_proj.weight.bin";
-    auto up_proj_path = boost::filesystem::path(model->config.model_path) / up_proj_name;
-    if (!up_proj.Init(model, up_proj_path.string(), ffn_hidden, hidden_dim)) {
-        return false;
-    }
 
     k_cache = Tensor::MakeNPUTensor(hidden_dim * max_seq_len, DT_FLOAT16);
     v_cache = Tensor::MakeNPUTensor(hidden_dim * max_seq_len, DT_FLOAT16);
@@ -584,10 +619,16 @@ std::shared_ptr<Tensor> MatmulLayerNPUImpl::Forward(std::shared_ptr<Tensor> inpu
 
     spdlog::debug("MatmulLayerNPUImpl::Forward m {} n {} k {}", ctx.cur_size, n, k);
 
-    {
+    if (qtype == QuantType::NoQuant) {
         APP_PROFILE("MatmulLayer", fmt::format("m {} n {} k {}", ctx.cur_size, n, k).c_str(),
                             ctx.npu_stream, &ctx.model->profiler, ctx.model->is_profiling);
         npu_matmul_nz_layer((void*)output_ptr, (void*)input_ptr, (void*)weight, ctx.cur_size, n, k, DT_FLOAT16, ctx.npu_stream);
+    }
+    else if (qtype == QuantType::AWQ_4B) {
+        APP_PROFILE("MatmulLayerAWQ4Bit", fmt::format("m {} n {} k {}", ctx.cur_size, n, k).c_str(),
+                            ctx.npu_stream, &ctx.model->profiler, ctx.model->is_profiling);
+        npu_matmul_nz_awq_4bit_layer((void*)output_ptr, (void*)input_ptr, (void*)weight, (void*)qzeros,
+                                      (void*)qscales, ctx.cur_size, n, k, DT_FLOAT16, ctx.npu_stream);
     }
     if (ctx.model->debug_print) {
         CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
@@ -609,7 +650,6 @@ bool MatmulLayerNPUImpl::Init(Llama2Model* model, const std::string& weight_path
         return false;
     }
 
-#if 1
     void* tmp_dev_weight;
     CHECK_ACL(aclrtMalloc((void **)&tmp_dev_weight, weight_size, ACL_MEM_MALLOC_HUGE_FIRST));
 
@@ -628,7 +668,7 @@ bool MatmulLayerNPUImpl::Init(Llama2Model* model, const std::string& weight_path
     npu_mamtul_weight_transpose_layer(weight, tmp_dev_weight, n, k, DT_FLOAT16, model->model_stream);
     CHECK_ACL(aclrtSynchronizeStream(model->model_stream));
     CHECK_ACL(aclrtFree(tmp_dev_weight));
-#else
+#if 0
     auto n1 = n / 16;
     Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>> 
     curr_weight_map((Eigen::half*)(weight), k, n1, 16);
@@ -644,6 +684,31 @@ bool MatmulLayerNPUImpl::Init(Llama2Model* model, const std::string& weight_path
     weight = (uint8_t*)tmp_dev_weight;
     delete[] temp_output_ptr;
 #endif
+    return true;
+}
+
+
+bool MatmulLayerNPUImpl::InitAWQ(Llama2Model* model, const std::string& weight_path,
+                                 const std::string& zero_path, const std::string& scale_path, size_t n, size_t k, QuantType quant_type) {
+    if (!MatmulLayerImpl::InitAWQ(model, weight_path, zero_path, scale_path, n, k, quant_type)) {
+        return false;
+    }
+
+    void* tmp_dev_weight;
+    void* tmp_dev_zero;
+    void* tmp_dev_scale;
+    CHECK_ACL(aclrtMalloc((void **)&tmp_dev_weight, weight_size, ACL_MEM_MALLOC_HUGE_FIRST));
+    CHECK_ACL(aclrtMalloc((void **)&tmp_dev_zero, zero_size, ACL_MEM_MALLOC_HUGE_FIRST));
+    CHECK_ACL(aclrtMalloc((void **)&tmp_dev_scale, scale_size, ACL_MEM_MALLOC_HUGE_FIRST));
+    CHECK_ACL(aclrtMemcpy(tmp_dev_weight, weight_size, weight, weight_size, ACL_MEMCPY_HOST_TO_DEVICE));
+    CHECK_ACL(aclrtMemcpy(tmp_dev_zero, zero_size, qzeros, zero_size, ACL_MEMCPY_HOST_TO_DEVICE));
+    CHECK_ACL(aclrtMemcpy(tmp_dev_scale, scale_size, qscales, scale_size, ACL_MEMCPY_HOST_TO_DEVICE));
+    free(weight);
+    free(qzeros);
+    free(qscales);
+    weight = (uint8_t*)tmp_dev_weight;
+    qzeros = (uint8_t*)tmp_dev_zero;
+    qscales = (uint8_t*)tmp_dev_scale;
     return true;
 }
 

@@ -4,6 +4,7 @@
 #include <string>
 #include <sstream>
 #include <cmath>
+#include <chrono>
 #include <spdlog/spdlog.h>
 #include <boost/filesystem.hpp>
 
@@ -13,6 +14,7 @@
 #include "device.hpp"
 #include "util.h"
 
+using namespace std::literals;
 
 Llama2InferenceCtx::Llama2InferenceCtx(Llama2Model* model, size_t cur_pos, size_t prev_pos)
 :model(model), cur_pos(cur_pos), prev_pos(prev_pos) {
@@ -56,13 +58,23 @@ bool Llama2Model::Init() {
     return true;
 }
 
+static int find_first_diff_str(const std::string& lhs, const std::string& rhs) {
+    int common_size = std::min(lhs.size(), rhs.size());
+    for (int i = 0; i < common_size; ++i) {
+        if (lhs[i] != rhs[i]) {
+            return i;
+        }
+    }
+    return common_size;
+}
+
 
 void Llama2Model::Chat(const std::string& input_seq, const std::string& reverse_prompt) {
     auto tokens = tokenizer.Encode(input_seq, true, false);
     auto reverse_prompt_size = reverse_prompt.size();
     int input_token_size = tokens.size();
     spdlog::debug("promt token size {}", input_token_size);
-    size_t curr_string_size = input_seq.size();
+    std::string prev_full_string = input_seq;
 
     std::cout << input_seq;
 
@@ -82,7 +94,7 @@ void Llama2Model::Chat(const std::string& input_seq, const std::string& reverse_
             
             tokens.insert(tokens.end(), user_input_tokens.begin(), user_input_tokens.end());
             cur_pos += user_input_tokens_size;
-            curr_string_size += user_input.size();
+            prev_full_string = tokenizer.Decode(tokens);
             is_interacting = false;
         }
 
@@ -178,10 +190,19 @@ void Llama2Model::Chat(const std::string& input_seq, const std::string& reverse_
         }
         spdlog::debug("cur_pos {} max_seq_len {} next_tok {}",  cur_pos, max_seq_len, next_tok);
         tokens.push_back(next_tok);
-        
+
+        std::stringstream new_ss;
         auto full_string = tokenizer.Decode(tokens);
-        std::string new_str = full_string.substr(curr_string_size+1);
-        curr_string_size += new_str.size();
+        int common_size = find_first_diff_str(full_string, prev_full_string);
+        if (common_size < prev_full_string.size()) {
+            // need to delete some char
+            for (int b = 0; b < prev_full_string.size() - common_size; ++b) {
+                new_ss << '\b';
+            }
+        }
+        prev_full_string = full_string;
+        std::string new_str = full_string.substr(common_size);
+        new_ss << new_str;
 
         int rstring_offset = full_string.size() - reverse_prompt_size;
         if (rstring_offset >= 0) {
@@ -197,7 +218,7 @@ void Llama2Model::Chat(const std::string& input_seq, const std::string& reverse_
             }
         }
 
-        std::cout << new_str << std::flush;
+        std::cout << new_ss.str() << std::flush;
 
         prev_pos = cur_pos;
         ++cur_pos;
@@ -211,16 +232,18 @@ void Llama2Model::TextCompletion(const std::string& input_seq) {
     auto tokens = tokenizer.Encode(input_seq, true, false);
     tokens.reserve(max_seq_len);
     int input_token_size = tokens.size();
+    int generate_limit = std::min(max_seq_len, input_token_size + max_gen_len);
     spdlog::debug("Llama2Model::TextCompletion input \"{}\" promt size {} token_size {}",  input_seq, input_token_size, max_seq_len);
-    size_t curr_string_size = input_seq.size();
-
+    std::string prev_full_string = input_seq;
     int output_seq_len = input_token_size;
 
     std::cout << "input prompt:\n" << input_seq;
 
     int prev_pos = 0;
-
-    for (int cur_pos = input_token_size; cur_pos < max_seq_len; ++cur_pos) {
+    auto start_tp = std::chrono::steady_clock::now();
+    float time_to_first_token_ms = -1;
+    int decode_token_num = 0;
+    for (int cur_pos = input_token_size; cur_pos < generate_limit; ++cur_pos) {
         spdlog::debug("cur_pos {} prev_pos {}",  cur_pos, prev_pos);
         Llama2InferenceCtx ctx(this, cur_pos, prev_pos);
         if (device_type == DEV_NPU) {
@@ -302,6 +325,15 @@ void Llama2Model::TextCompletion(const std::string& input_seq) {
             auto max_pos = argmax_layer.Forward(h, ctx);
             next_tok = static_cast<int32_t*>(max_pos->data_ptr)[ctx.cur_size-1];
         }
+
+        if (time_to_first_token_ms < 0) {
+            auto curr_tp = std::chrono::steady_clock::now();
+            time_to_first_token_ms = (curr_tp - start_tp) / 1ms;
+        }
+        else {
+            ++decode_token_num;
+        }
+
         if (next_tok == tokenizer.eos_id) {
             break;
         }
@@ -314,14 +346,26 @@ void Llama2Model::TextCompletion(const std::string& input_seq) {
         auto next_tok_str = tokenizer.Decode(output_token);
         spdlog::debug("Llama2Model::Forward input \"{}\" output string {}", input_seq, next_tok_str);
 
+        std::stringstream new_ss;
         auto full_string = tokenizer.Decode(tokens);
-        std::string new_str = full_string.substr(curr_string_size+1);
-        curr_string_size += new_str.size();
-
-        std::cout << new_str << std::flush;
+        int common_size = find_first_diff_str(full_string, prev_full_string);
+        if (common_size < prev_full_string.size()) {
+            // need to delete some char
+            for (int b = 0; b < prev_full_string.size() - common_size; ++b) {
+                new_ss << '\b';
+            }
+        }
+        prev_full_string = full_string;
+        std::string new_str = full_string.substr(common_size);
+        new_ss << new_str;
+        std::cout << new_ss.str() << std::flush;
 
         prev_pos = cur_pos;
     }
+
+    auto curr_tp = std::chrono::steady_clock::now();
+    float total_time_ms = (curr_tp - start_tp) / 1ms;
+    float decode_time_ms = total_time_ms - time_to_first_token_ms;
 
     std::cout << std::endl;
 
@@ -331,6 +375,9 @@ void Llama2Model::TextCompletion(const std::string& input_seq) {
     auto next_tok_str = tokenizer.Decode(output_token);
 
     spdlog::debug("Llama2Model::TextCompletion input \"{}\" output string {}", input_seq, next_tok_str);
+    spdlog::info("Llama2Model::TextCompletion total_time: {:.2f}ms", total_time_ms);
+    spdlog::info("Llama2Model::TextCompletion total_time: prompt token {}, time to first token: {:.2f}ms", input_token_size, time_to_first_token_ms);
+    spdlog::info("Llama2Model::TextCompletion total_time: decode stage token {}, total decoding time: {:.2f}ms, {:.2f}ms per token", decode_token_num, decode_time_ms, decode_time_ms/decode_token_num);
 }
 
 std::string Llama2Model::GetCurrTokenString(size_t prev_string_size, const std::vector<int>& tokens) {
@@ -784,6 +831,38 @@ bool MatmulLayerImpl::Init(Llama2Model* model, const std::string& weight_path, s
     return true;
 }
 
+bool MatmulLayerImpl::InitAWQ(Llama2Model* model, const std::string& weight_path,
+                              const std::string& zero_path, const std::string& scale_path, size_t n, size_t k, QuantType quant_type) {
+    qtype = quant_type;
+    constexpr int group_size = 128;
+    this->n = n;
+    this->k = k;
+    weight_size = n * k / 2;
+    zero_size = n * k / group_size * sizeof(uint16_t);
+    scale_size = n * k / group_size * sizeof(uint16_t);
+
+    weight = (uint8_t*)malloc(weight_size);
+    if (weight == nullptr) {
+        spdlog::critical("oom!");
+        return false;
+    }
+
+    if (!LoadBinaryFile(weight_path.c_str(), weight, weight_size)) {
+        return false;
+    }
+
+    qzeros = (uint8_t*)malloc(zero_size);
+    if (!LoadBinaryFile(zero_path.c_str(), qzeros, zero_size)) {
+        return false;
+    }
+
+    qscales = (uint8_t*)malloc(scale_size);
+    if (!LoadBinaryFile(scale_path.c_str(), qscales, scale_size)) {
+        return false;
+    }
+    return true;
+}
+
 
 void MatmulLayerImpl::UnInit() {
     
@@ -816,6 +895,26 @@ bool MatmulLayer::Init(Llama2Model* model, const std::string& weight_path, size_
     return impl->Init(model, weight_path, n, k);
 }
 
+bool MatmulLayer::InitAWQ(Llama2Model* model, const std::string& weight_path,
+                          const std::string& zero_path, const std::string& scale_path,
+                          size_t n, size_t k, QuantType quant_type) {
+    switch (model->device_type)
+    {
+    case DEV_NPU:
+        impl = new MatmulLayerNPUImpl();
+        break;
+    case DEV_CPU:
+        impl = new MatmulLayerCPUImpl();
+        break;
+    
+    default:
+        spdlog::critical("invalid device type");
+        return false;
+        break;
+    }
+    return impl->InitAWQ(model, weight_path, zero_path, scale_path, n, k, quant_type);
+}
+
 void MatmulLayer::UnInit() {
 
 }
@@ -831,8 +930,8 @@ bool RoPELayerImpl::Init(Llama2Model* model, const std::string& weight_path) {
     n_heads = model->n_heads;
     rope_dim = model->max_seq_len * model->hidden_dim;
     weight_size = sizeof(float) * rope_dim;
-
     freqs_cis = model->freq_cis;
+    rope_is_neox_style = model->rope_is_neox_style;
 
     return true;
 }

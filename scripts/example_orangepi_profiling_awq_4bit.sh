@@ -4,7 +4,9 @@
 --profiling_output=llama_full_prof.json \
 --config=/data/llama2/7B/params.json \
 --tokenizer=/data/llama2/tokenizer.model \
---weight=/data/llama2/7B/model_output \
+--weight=/data/llama2_7b_awq/llama2_7b_awq_4bit/ \
 --device_type=npu \
+--quant_method=awq_4bit \
+--quant_group_size=128 \
 --max_seq_len=128 \
 --prompt="Once upon"

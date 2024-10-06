@@ -1,6 +1,7 @@
 #include <iostream>
 #include <cmath>
 #include <limits>
+#include <string>
 
 #include <gtest/gtest.h>
 #include <acl/acl.h>
@@ -8,6 +9,7 @@
 
 #include <unsupported/Eigen/CXX11/Tensor>
 #include <Eigen/Core>
+#include <fmt/format.h>
 
 
 #include "npu_ops.h"
@@ -23,6 +25,14 @@
     }                                                                          \
   } while (0);
 
+#define CHECK_ACL2(x)                                                          \
+  do {                                                                         \
+    aclError __ret = x;                                                        \
+    if (__ret != ACL_ERROR_NONE) {                                             \
+      std::cerr << __FILE__ << ":" << __LINE__ << " aclError:" << __ret        \
+                << std::endl;                                                  \
+    }                                                                          \
+  } while (0);
 
 class ACLEnvironment : public ::testing::Environment {
  public:
@@ -45,6 +55,36 @@ class ACLEnvironment : public ::testing::Environment {
   int32_t deviceId{0};
 };
 
+class ACLTimer {
+public:
+    ACLTimer(const std::string& desc, aclrtStream stream):desc(desc), stream(stream) {
+        CHECK_ACL2(aclrtCreateEvent(&start_event));
+        CHECK_ACL2(aclrtCreateEvent(&end_event));
+    }
+    ~ACLTimer() {
+        CHECK_ACL2(aclrtDestroyEvent(start_event));
+        CHECK_ACL2(aclrtDestroyEvent(end_event));
+    }
+
+    void Start() {
+        CHECK_ACL2(aclrtRecordEvent(start_event, stream));
+    }
+
+    void Stop() {
+        CHECK_ACL2(aclrtRecordEvent(end_event, stream));
+        CHECK_ACL2(aclrtSynchronizeStream(stream));
+    }
+    void Print() {
+        float duration_ms;
+        CHECK_ACL2(aclrtEventElapsedTime(&duration_ms, start_event, end_event));
+        std::cout << desc << " duration: " << duration_ms << "ms" << std::endl;
+    }
+private:
+    std::string desc;
+    aclrtStream stream;
+    aclrtEvent start_event;
+    aclrtEvent end_event;
+};
 
 testing::Environment* const acl_env =
     testing::AddGlobalTestEnvironment(new ACLEnvironment);
@@ -66,6 +106,17 @@ void make_random_float(float* buffer, size_t size) {
     }
 }
 
+void make_random_float_uint4(float* buffer, size_t size) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dis(0, 15);
+
+    for (size_t i = 0; i < size; ++i) {
+      buffer[i] = static_cast<float>(dis(gen));
+    }
+}
+
+
 bool all_close(float* output_buffer, float* golden_buffer, size_t size,
               float abs_err = 0.001f, float relative_err =  0.001f) {
   for (size_t i = 0; i < size; ++i) {
@@ -74,7 +125,6 @@ bool all_close(float* output_buffer, float* golden_buffer, size_t size,
       
       float abs_diff = std::fabs(a - b);
       float max_abs_val = std::max(std::fabs(a), std::fabs(b));
-
       if (abs_diff > abs_err && (abs_diff / max_abs_val) > relative_err) {
         std::cout << "all_close failed, output [" << i << "] :" << a << " vs " << b << std::endl;
         return false;
@@ -513,7 +563,7 @@ TEST(NpuOpsTest, Add) {
   aclrtStream stream = nullptr;
   CHECK_ACL(aclrtCreateStream(&stream));
 
-  size_t max_buffer_size = hidden_dim * max_seq_len;
+  size_t max_buffer_size = ffn_hidden * max_seq_len;
   void* dev_input_0_f16;
   void* dev_input_1_f16;
   void* dev_output_f16;
@@ -858,7 +908,7 @@ TEST(NpuOpsTest, BMMTransV) {
       output_fp16_map((Eigen::half*)host_output_f16, output_element_cnt);
       output_fp32_map = output_fp16_map.cast<float>();
 
-      ASSERT_TRUE(all_close(host_output, golden_trans_fp32, output_element_cnt, 0.01f, 0.01f))
+      ASSERT_TRUE(all_close(host_output, golden_trans_fp32, output_element_cnt))
         << "test cur_size: " << cur_size << " cur_pos: " << cur_pos;
     }
   }
@@ -875,6 +925,404 @@ TEST(NpuOpsTest, BMMTransV) {
   CHECK_ACL(aclrtFree(dev_lhs_f16));
   CHECK_ACL(aclrtFree(dev_rhs_f16));
   CHECK_ACL(aclrtFree(dev_output_f16));
+
+  CHECK_ACL(aclrtDestroyStream(stream));
+}
+
+TEST(NpuOpsTest, GemmAWQ4Bit) {
+  aclrtStream stream = nullptr;
+  CHECK_ACL(aclrtCreateStream(&stream));
+
+  size_t max_n = ffn_hidden;
+  size_t group_size = 128;
+
+  size_t max_lhs_buffer_size = ffn_hidden * ffn_hidden;
+  size_t max_weight_buffer_size = ffn_hidden * max_n;
+  size_t max_zero_buffer_size = ffn_hidden * max_n / group_size;
+  size_t max_scale_buffer_size = ffn_hidden * max_n / group_size;
+  size_t max_output_buffer_size = ffn_hidden * max_n;
+
+  void* dev_lhs_f16;
+  void* dev_weight_s4;
+  void* dev_zero_fp16;
+  void* dev_scale_fp16;
+  void* dev_output_f16;
+
+  float* host_lhs = new float[max_lhs_buffer_size];
+  float* host_rhs = new float[max_weight_buffer_size];
+  float* host_rhs_nz = new float[max_weight_buffer_size];
+  float* host_zero = new float[max_zero_buffer_size];
+  float* host_scale = new float[max_scale_buffer_size];
+  float* host_output = new float[max_output_buffer_size];
+  Eigen::half* host_lhs_f16 = new Eigen::half[max_lhs_buffer_size];
+  uint8_t* host_weight_s4 = new uint8_t[max_weight_buffer_size/2];
+  Eigen::half* host_zero_f16 = new Eigen::half[max_zero_buffer_size];
+  Eigen::half* host_scale_f16 = new Eigen::half[max_scale_buffer_size];
+  Eigen::half* host_output_f16 = new Eigen::half[max_output_buffer_size];
+  float* golden_fp32 = new float[max_output_buffer_size];
+
+
+  CHECK_ACL(aclrtMalloc((void**)&dev_lhs_f16, max_lhs_buffer_size * sizeof(aclFloat16), ACL_MEM_MALLOC_HUGE_FIRST));
+  CHECK_ACL(aclrtMalloc((void**)&dev_weight_s4, max_weight_buffer_size/2 * sizeof(uint8_t), ACL_MEM_MALLOC_HUGE_FIRST));
+  CHECK_ACL(aclrtMalloc((void**)&dev_zero_fp16, max_zero_buffer_size * sizeof(aclFloat16), ACL_MEM_MALLOC_HUGE_FIRST));
+  CHECK_ACL(aclrtMalloc((void**)&dev_scale_fp16, max_scale_buffer_size * sizeof(aclFloat16), ACL_MEM_MALLOC_HUGE_FIRST));
+  CHECK_ACL(aclrtMalloc((void**)&dev_output_f16, max_output_buffer_size * sizeof(aclFloat16), ACL_MEM_MALLOC_HUGE_FIRST));
+
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_int_distribution<size_t> m_dis(2, hidden_dim);
+
+  std::vector<size_t> m_list = {1};
+  constexpr int rnd_m_num = 10;
+  for (int i = 0; i < rnd_m_num; ++i) {
+    m_list.push_back(m_dis(gen));
+  }
+
+  
+  for (size_t m: m_list) {
+    for (size_t k : {(size_t)hidden_dim, (size_t)ffn_hidden}) {
+      for (size_t n : {(size_t)hidden_dim, (size_t)ffn_hidden}) {
+        size_t n1 = n/16;
+        size_t lhs_element_cnt = m * k;
+        size_t rhs_element_cnt = n * k;
+        size_t num_group = k / group_size;
+        size_t zero_scale_cnt = n * num_group;
+        size_t output_element_cnt = m * n;
+        make_random_float(host_lhs, lhs_element_cnt);
+        make_random_float_uint4(host_rhs, rhs_element_cnt);
+        make_random_float_uint4(host_zero, zero_scale_cnt);
+        make_random_float(host_scale, zero_scale_cnt);
+        
+        /*
+        for (int mi = 0; mi < m ; ++mi) {
+          for (int hi = 0; hi < k; ++hi) {
+            if (mi == hi) {
+              host_lhs[mi*k + hi] = 1.0f;
+            }
+            else {
+              host_lhs[mi*k + hi] = 0.0f;
+            }
+          }
+        }
+
+        for (int ni = 0; ni < n ; ++ni) {
+          for (int hi = 0; hi < k; ++hi) {
+            if (ni == hi) {
+              host_rhs[hi*n + ni] = 1.0f;
+            }
+            else {
+              host_rhs[hi*n + ni] = 0.0f;
+            }
+          }
+        }
+
+        for (int zi = 0; zi < zero_scale_cnt; ++zi) {
+          //host_zero[zi] = 0;
+          //host_scale[zi] = 1.0f;
+        }
+        */
+        
+        Eigen::TensorMap<Eigen::Tensor<float, 2, Eigen::RowMajor|Eigen::DontAlign>> 
+        golden_fp32_map((float*)golden_fp32, m, n);
+
+        Eigen::TensorMap<Eigen::Tensor<float, 2, Eigen::RowMajor|Eigen::DontAlign>> 
+        input_lhs_map((float*)host_lhs, m, k);
+
+        Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
+        input_lhs_fp16_map((Eigen::half*)host_lhs_f16, m, k);
+        input_lhs_fp16_map = input_lhs_map.cast<Eigen::half>();
+        input_lhs_map = input_lhs_fp16_map.cast<float>();
+
+        Eigen::TensorMap<Eigen::Tensor<float, 3, Eigen::RowMajor|Eigen::DontAlign>> 
+        input_rhs_map((float*)host_rhs, num_group, group_size, n);
+
+        Eigen::TensorMap<Eigen::Tensor<float, 3, Eigen::RowMajor|Eigen::DontAlign>> 
+        input_rhs_nz_map((float*)host_rhs_nz, k / 16, n, 16);
+        input_rhs_nz_map = input_rhs_map.reshape(Eigen::array<size_t, 3>{k / 16, 16, n}).shuffle(Eigen::array<size_t, 3>({0, 2, 1}));
+
+        Eigen::TensorMap<Eigen::Tensor<float, 3, Eigen::RowMajor|Eigen::DontAlign>> 
+        input_zero_fp32_map((float*)host_zero, num_group, 1, n);
+
+        Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>> 
+        input_zero_fp16_map((Eigen::half*)host_zero_f16, num_group, 1, n);
+
+        input_zero_fp16_map = input_zero_fp32_map.cast<Eigen::half>();
+        input_zero_fp32_map = input_zero_fp16_map.cast<float>();
+
+        Eigen::TensorMap<Eigen::Tensor<float, 3, Eigen::RowMajor|Eigen::DontAlign>> 
+        input_scale_fp32_map((float*)host_scale, num_group, 1, n);
+        
+        Eigen::TensorMap<Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor|Eigen::DontAlign>> 
+        input_scale_fp16_map((Eigen::half*)host_scale_f16, num_group, 1, n);
+
+        input_scale_fp16_map = (input_scale_fp32_map / input_scale_fp32_map.constant(16.0f)).cast<Eigen::half>();
+        input_scale_fp32_map = input_scale_fp16_map.cast<float>();
+
+
+        // (x, 4, 64, 2) -> (x, 64, 4, 2)
+        for (int i1 = 0; i1 < rhs_element_cnt/512; ++i1) {
+            int i1_stride_u8 = 4 * 64 * 2;
+            int i1_stride_s4 = 4 * 64;
+            for (int i2 = 0; i2 < 4; ++i2) {
+                int i2_stride_u8 = 64 * 2;
+                int i2_stride_s4 = 1;
+                for (int i3 = 0; i3 < 64; ++i3) {
+                    int i3_stride_u8 = 2;
+                    int i3_stride_s4 = 4;
+                    int u8_offset = i1 * i1_stride_u8 + i2 * i2_stride_u8 + i3 * i3_stride_u8;
+                    host_weight_s4[i1 * i1_stride_s4 + i2 * i2_stride_s4 + i3 * i3_stride_s4]
+                        = (static_cast<uint8_t>(host_rhs_nz[u8_offset])) | (static_cast<uint8_t>(host_rhs_nz[u8_offset + 1]) << 4);
+                }
+            }
+        }
+
+        CHECK_ACL(aclrtMemcpy(dev_lhs_f16, lhs_element_cnt * sizeof(aclFloat16), host_lhs_f16,
+                                  lhs_element_cnt * sizeof(aclFloat16), ACL_MEMCPY_HOST_TO_DEVICE));
+        CHECK_ACL(aclrtMemcpy(dev_weight_s4, rhs_element_cnt * sizeof(uint8_t)/2, host_weight_s4,
+                                  rhs_element_cnt * sizeof(uint8_t)/2, ACL_MEMCPY_HOST_TO_DEVICE));
+        CHECK_ACL(aclrtMemcpy(dev_zero_fp16, zero_scale_cnt * sizeof(aclFloat16), host_zero_f16,
+                                  zero_scale_cnt * sizeof(aclFloat16), ACL_MEMCPY_HOST_TO_DEVICE));
+        CHECK_ACL(aclrtMemcpy(dev_scale_fp16, zero_scale_cnt * sizeof(aclFloat16), host_scale_f16,
+                                  zero_scale_cnt * sizeof(aclFloat16), ACL_MEMCPY_HOST_TO_DEVICE));
+        
+        ACLTimer timer(fmt::format("gemm awq 4bit m: {} n: {} k: {}", m, n, k), stream);
+
+        timer.Start();
+        npu_matmul_nz_awq_4bit_layer(dev_output_f16,
+                            dev_lhs_f16,
+                            dev_weight_s4,
+                            dev_zero_fp16,
+                            dev_scale_fp16,
+                            m, n, k,
+                            DT_FLOAT16,
+                            stream);
+        timer.Stop();
+        timer.Print();
+        Eigen::array<size_t, 3> brc_dim = {1, group_size, 1};
+
+        auto tmp_expr = ((input_rhs_map - input_zero_fp32_map.broadcast(brc_dim)).cast<Eigen::half>().cast<float>() *
+            (input_scale_fp32_map.broadcast(brc_dim))).reshape(Eigen::array<size_t, 2>{k, n});
+        
+        Eigen::array<Eigen::IndexPair<int>, 1> product_dims = { Eigen::IndexPair<int>(1, 0) };
+        golden_fp32_map = input_lhs_map.contract(tmp_expr.cast<Eigen::half>().cast<float>(), product_dims);
+
+        
+        CHECK_ACL(aclrtSynchronizeStream(stream));
+
+        CHECK_ACL(aclrtMemcpy(host_output_f16, output_element_cnt * sizeof(aclFloat16), dev_output_f16, output_element_cnt * sizeof(aclFloat16), ACL_MEMCPY_DEVICE_TO_HOST));
+
+        Eigen::TensorMap<Eigen::Tensor<float, 2, Eigen::RowMajor|Eigen::DontAlign>> 
+        output_fp32_map((float*)host_output, m, n);
+
+        Eigen::TensorMap<Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor|Eigen::DontAlign>> 
+        output_fp16_map((Eigen::half*)host_output_f16, m, n);
+        output_fp32_map = output_fp16_map.cast<float>();
+
+        ASSERT_TRUE(all_close(host_output, golden_fp32, output_element_cnt))
+          << "m: " << m << " n: " << n << " k: " << k;
+
+      } // loop n
+    } // loop k
+  }
+
+  delete[] host_lhs;
+  delete[] host_rhs;
+  delete[] host_zero;
+  delete[] host_scale;
+  delete[] host_output;
+  delete[] host_lhs_f16;
+  delete[] host_weight_s4;
+  delete[] host_zero_f16;
+  delete[] host_scale_f16;
+  delete[] host_output_f16;
+  delete[] golden_fp32;
+          
+  CHECK_ACL(aclrtFree(dev_lhs_f16));
+  CHECK_ACL(aclrtFree(dev_weight_s4));
+  CHECK_ACL(aclrtFree(dev_zero_fp16));
+  CHECK_ACL(aclrtFree(dev_scale_fp16));
+  CHECK_ACL(aclrtFree(dev_output_f16));
+
+  CHECK_ACL(aclrtDestroyStream(stream));
+}
+
+static void InitFreqCIS(float* freq_cis) {
+    const float theta = 10000.0f;
+    int head_dim = hidden_dim / head_num;
+    int freq_len = head_dim / 2;
+    float* freq = new float[freq_len];
+
+    for (int i = 0; i < freq_len; ++i) {
+        freq[i] = 1.0f / (powf(theta, static_cast<float>(i *2) / static_cast<float>(head_dim)));
+    }
+
+    float* t = new float[max_seq_len];
+    for (int i = 0; i < max_seq_len; ++i) {
+        t[i] = static_cast<float>(i);
+    }
+
+    float* freq_outer = new float[freq_len*max_seq_len];
+
+    // max_seq_len row, freq_len column
+    for (int i = 0; i < max_seq_len; ++i) {
+        for (int j = 0; j < freq_len; ++j) {
+            freq_outer[i*freq_len + j] = t[i] * freq[j];
+        }
+    }
+
+    for (int i = 0; i < max_seq_len * freq_len; ++i) {
+        freq_cis[i*2] = std::cos(freq_outer[i]);
+        freq_cis[i*2+1] = std::sin(freq_outer[i]);
+    }
+
+    delete[] freq;
+    delete[] t;
+    delete[] freq_outer;
+
+}
+
+TEST(NpuOpsTest, RopeLayer) {
+  aclrtStream stream = nullptr;
+  CHECK_ACL(aclrtCreateStream(&stream));
+
+  size_t max_buffer_size = hidden_dim * max_seq_len;
+  size_t rope_dim = hidden_dim * max_seq_len;
+  size_t freq_len = head_dim / 2;
+  void* dev_input_q_f16;
+  void* dev_input_k_f16;
+  void* dev_output_q_f16;
+  void* dev_output_k_f16;
+  void* dev_freq_cis;
+
+  float* host_input_q = new float[max_buffer_size];
+  float* host_input_k = new float[max_buffer_size];
+  float* host_output_q = new float[max_buffer_size];
+  float* host_output_k = new float[max_buffer_size];
+  Eigen::half* host_input_q_f16 = new Eigen::half[max_buffer_size];
+  Eigen::half* host_input_k_f16 = new Eigen::half[max_buffer_size];
+  Eigen::half* host_output_q_f16 = new Eigen::half[max_buffer_size];
+  Eigen::half* host_output_k_f16 = new Eigen::half[max_buffer_size];
+  float* golden_q_fp32 = new float[max_buffer_size];
+  float* golden_k_fp32 = new float[max_buffer_size];
+  float* host_freq_cis = new float[rope_dim];
+  InitFreqCIS(host_freq_cis);
+
+  CHECK_ACL(aclrtMalloc((void**)&dev_input_q_f16, max_buffer_size * sizeof(aclFloat16), ACL_MEM_MALLOC_HUGE_FIRST));
+  CHECK_ACL(aclrtMalloc((void**)&dev_input_k_f16, max_buffer_size * sizeof(aclFloat16), ACL_MEM_MALLOC_HUGE_FIRST));
+  CHECK_ACL(aclrtMalloc((void**)&dev_output_q_f16, max_buffer_size * sizeof(aclFloat16), ACL_MEM_MALLOC_HUGE_FIRST));
+  CHECK_ACL(aclrtMalloc((void**)&dev_output_k_f16, max_buffer_size * sizeof(aclFloat16), ACL_MEM_MALLOC_HUGE_FIRST));
+  CHECK_ACL(aclrtMalloc((void**)&dev_freq_cis, rope_dim * sizeof(float), ACL_MEM_MALLOC_HUGE_FIRST));
+ 
+  CHECK_ACL(aclrtMemcpy(dev_freq_cis, rope_dim * sizeof(float), host_freq_cis,
+                        rope_dim * sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE));
+
+  for (int seq_len = 1; seq_len <= max_seq_len; ++seq_len) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<int> start_pos_dis(0, max_seq_len - seq_len);
+    int start_pos = start_pos_dis(gen);
+
+    std::cout << "test rope: " << "seq_len: " << seq_len << " start pos " << start_pos << "\n";
+    int total_element_cnt = seq_len * hidden_dim;
+    make_random_float(host_input_q, total_element_cnt);
+    make_random_float(host_input_k, total_element_cnt);
+
+    Eigen::TensorMap<Eigen::Tensor<float, 1, Eigen::RowMajor|Eigen::DontAlign>> 
+    input_q_fp32_map((float*)host_input_q, total_element_cnt);
+    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 1, Eigen::RowMajor|Eigen::DontAlign>> 
+    input_q_fp16_map((Eigen::half*)host_input_q_f16, total_element_cnt);
+    input_q_fp16_map = input_q_fp32_map.cast<Eigen::half>();
+    input_q_fp32_map = input_q_fp16_map.cast<float>();
+
+    Eigen::TensorMap<Eigen::Tensor<float, 1, Eigen::RowMajor|Eigen::DontAlign>> 
+    input_k_fp32_map((float*)host_input_k, total_element_cnt);
+    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 1, Eigen::RowMajor|Eigen::DontAlign>> 
+    input_k_fp16_map((Eigen::half*)host_input_k_f16, total_element_cnt);
+    input_k_fp16_map = input_k_fp32_map.cast<Eigen::half>();
+    input_k_fp32_map = input_k_fp16_map.cast<float>();
+
+    for (int s = 0; s < seq_len; ++s) {
+        for (int n = 0; n < head_num; ++n) {
+            for (int f = 0;f < freq_len; ++f) {
+                float fc = host_freq_cis[(s + start_pos)*freq_len*2 + 2*f];
+                float fd = host_freq_cis[(s + start_pos)*freq_len*2 + 2*f+1];
+
+                int hidden_offset = s * hidden_dim + n * head_dim;
+
+                float qa = host_input_q[hidden_offset + 2*f];
+                float qb = host_input_q[hidden_offset + 2*f+1];
+
+                float ka = host_input_k[hidden_offset + 2*f];
+                float kb = host_input_k[hidden_offset + 2*f+1];
+
+                golden_q_fp32[hidden_offset + 2*f] = qa * fc - qb * fd;
+                golden_q_fp32[hidden_offset + 2*f + 1] = qa * fd + qb * fc;
+
+                golden_k_fp32[hidden_offset + 2*f] = ka * fc - kb * fd;
+                golden_k_fp32[hidden_offset + 2*f + 1] = ka * fd + kb * fc;
+            }
+        }
+    }
+
+    CHECK_ACL(aclrtMemcpy(dev_input_q_f16, total_element_cnt * sizeof(aclFloat16), host_input_q_f16,
+                                total_element_cnt * sizeof(aclFloat16), ACL_MEMCPY_HOST_TO_DEVICE));
+    CHECK_ACL(aclrtMemcpy(dev_input_k_f16, total_element_cnt * sizeof(aclFloat16), host_input_k_f16,
+                                total_element_cnt * sizeof(aclFloat16), ACL_MEMCPY_HOST_TO_DEVICE));
+
+    npu_rope_layer(dev_output_q_f16,
+                   dev_output_k_f16,
+                   dev_freq_cis,
+                   dev_input_q_f16,
+                   dev_input_k_f16,
+                   start_pos,
+                   seq_len,
+                   head_num,
+                   hidden_dim,
+                   false,
+                   DT_FLOAT16,
+                   stream);
+    CHECK_ACL(aclrtSynchronizeStream(stream));
+
+    CHECK_ACL(aclrtMemcpy(host_output_q_f16, total_element_cnt * sizeof(aclFloat16), dev_output_q_f16, total_element_cnt * sizeof(aclFloat16), ACL_MEMCPY_DEVICE_TO_HOST));
+    CHECK_ACL(aclrtMemcpy(host_output_k_f16, total_element_cnt * sizeof(aclFloat16), dev_output_k_f16, total_element_cnt * sizeof(aclFloat16), ACL_MEMCPY_DEVICE_TO_HOST));
+
+    Eigen::TensorMap<Eigen::Tensor<float, 1, Eigen::RowMajor|Eigen::DontAlign>> 
+    output_q_fp32_map((float*)host_output_q, total_element_cnt);
+    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 1, Eigen::RowMajor|Eigen::DontAlign>> 
+    output_q_fp16_map((Eigen::half*)host_output_q_f16, total_element_cnt);
+    output_q_fp32_map = output_q_fp16_map.cast<float>();
+
+    Eigen::TensorMap<Eigen::Tensor<float, 1, Eigen::RowMajor|Eigen::DontAlign>> 
+    output_k_fp32_map((float*)host_output_k, total_element_cnt);
+    Eigen::TensorMap<Eigen::Tensor<Eigen::half, 1, Eigen::RowMajor|Eigen::DontAlign>> 
+    output_k_fp16_map((Eigen::half*)host_output_k_f16, total_element_cnt);
+    output_k_fp32_map = output_k_fp16_map.cast<float>();
+
+    ASSERT_TRUE(all_close(golden_q_fp32, host_output_q, total_element_cnt))
+        << "seq_len: " << seq_len;
+    
+    ASSERT_TRUE(all_close(golden_k_fp32, host_output_k, total_element_cnt))
+        << "seq_len: " << seq_len;
+  }
+
+  delete[] host_input_q;
+  delete[] host_input_k;
+  delete[] host_output_q;
+  delete[] host_output_k;
+  delete[] host_input_q_f16;
+  delete[] host_input_k_f16;
+  delete[] host_output_q_f16;
+  delete[] host_output_k_f16;
+  delete[] golden_q_fp32;
+  delete[] golden_k_fp32;
+  delete[] host_freq_cis;
+
+          
+  CHECK_ACL(aclrtFree(dev_input_q_f16));
+  CHECK_ACL(aclrtFree(dev_input_k_f16));
+  CHECK_ACL(aclrtFree(dev_output_q_f16));
+  CHECK_ACL(aclrtFree(dev_output_k_f16));
+  CHECK_ACL(aclrtFree(dev_freq_cis));
 
   CHECK_ACL(aclrtDestroyStream(stream));
 }

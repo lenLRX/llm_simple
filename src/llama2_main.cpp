@@ -33,11 +33,13 @@ int main(int argc, char** argv) {
         std::string str_level;
         std::string profiling_output_path;
         std::string reverse_promt;
+        std::string str_quant_method;
 
         po::options_description desc("llama2 inference options");
         desc.add_options()
         ("help", "produce help message")
-        ("max_seq_len", po::value<int>(&model.max_seq_len)->default_value(16), "max sequence length of tokens. default:128")
+        ("max_seq_len", po::value<int>(&model.max_seq_len)->default_value(2048), "max sequence length of tokens. default:2048")
+        ("max_gen_token", po::value<int>(&model.max_gen_len)->default_value(2048), "max generate of tokens. default:2048")
         ("tokenizer", po::value<std::string>(&model.config.tok_path)->required(), "path to tokenizer")
         ("weight", po::value<std::string>(&model.config.model_path)->required(), "path to model weight")
         ("config", po::value<std::string>(&model.config.config_path)->required(), "path to model config")
@@ -46,11 +48,14 @@ int main(int argc, char** argv) {
         ("prompt_file", po::value<std::string>(&prompt_file_path), "prompt file")
         ("log_level", po::value<std::string>(&str_level), "log level:[trace,debug,info,warning,error,critical,off]")
         ("profiling_output", po::value<std::string>(&profiling_output_path), "profiling_output_file xx.json")
-        ("debug_print", po::value<bool>(&model.debug_print), "print tensor value to debug")
+        ("debug_print", po::value<bool>(&model.debug_print)->default_value(false), "print tensor value to debug")
         ("temperature", po::value<float>(&model.temperature)->default_value(0.6), "sample temperature, default: 0.6")
         ("top_p", po::value<float>(&model.top_p)->default_value(0.9), "sample top_p, default: 0.9")
         ("reverse_promt", po::value<std::string>(&reverse_promt), "reverse_promt in interactive mode")
-        ("i", "interactive mode");
+        ("i", "interactive mode")
+        ("quant_method", po::value<std::string>(&str_quant_method), "quant_method: current support: awq_4bit")
+        ("quant_group_size", po::value<int>(&model.quant_group_size)->default_value(-1), "group size in quant")
+        ("rope_is_neox_style", po::value<bool>(&model.rope_is_neox_style)->default_value(false), "rope embedding style, defalut: false");
 
 
         po::variables_map vm;
@@ -130,6 +135,10 @@ int main(int argc, char** argv) {
         else {
             spdlog::error("invalid config path {}", model.config.config_path);
             return 1;
+        }
+
+        if (str_quant_method == "awq_4bit") {
+            model.q_type = QuantType::AWQ_4B;
         }
 
         if (!model.Init()) {

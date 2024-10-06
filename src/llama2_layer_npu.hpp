@@ -72,6 +72,8 @@ public:
     virtual ~MatmulLayerNPUImpl();
     virtual std::shared_ptr<Tensor> Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) override;
     virtual bool Init(Llama2Model* model, const std::string& weight_path, size_t n, size_t k) override;
+    virtual bool InitAWQ(Llama2Model* model, const std::string& weight_path,
+                         const std::string& zero_path, const std::string& scale_path, size_t n, size_t k, QuantType quant_type) override;
     virtual void UnInit() override;
 };
 

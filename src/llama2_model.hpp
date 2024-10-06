@@ -21,6 +21,11 @@ public:
     nlohmann::json config;
 };
 
+enum class QuantType {
+    NoQuant,
+    AWQ_4B
+};
+
 
 class Llama2Model;
 
@@ -101,6 +106,7 @@ public:
     size_t head_dim;
     size_t rope_dim;
     size_t weight_size;
+    bool rope_is_neox_style;
     float* freqs_cis{nullptr};
 };
 
@@ -214,12 +220,20 @@ public:
     virtual ~MatmulLayerImpl();
     virtual std::shared_ptr<Tensor> Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx) = 0;
     virtual bool Init(Llama2Model* model, const std::string& weight_path, size_t n, size_t k);
+    virtual bool InitAWQ(Llama2Model* model, const std::string& weight_path,
+                         const std::string& zero_path, const std::string& scale_path, size_t n, size_t k, QuantType quant_type);
     virtual void UnInit();
 
     size_t n;
     size_t k;
     size_t weight_size;
+    size_t zero_size;
+    size_t scale_size;
     uint8_t* weight{nullptr};
+    uint8_t* qzeros{nullptr};
+    uint8_t* qscales{nullptr};
+
+    QuantType qtype{QuantType::NoQuant};
 };
 
 
@@ -228,6 +242,8 @@ public:
     ~MatmulLayer();
     std::shared_ptr<Tensor> Forward(std::shared_ptr<Tensor> input, Llama2InferenceCtx& ctx);
     bool Init(Llama2Model* model, const std::string& weight_path, size_t n, size_t k);
+    bool InitAWQ(Llama2Model* model, const std::string& weight_path,
+                 const std::string& zero_path, const std::string& scale_path, size_t n, size_t k, QuantType quant_type);
     void UnInit();
     MatmulLayerImpl* impl{nullptr};
 };
@@ -278,9 +294,13 @@ public:
     int n_layers;
     int multiple_of;
     int max_seq_len;
+    int max_gen_len;
     float norm_eps;
     float temperature{0.0f};
     float top_p{0.0f};
+    QuantType q_type{QuantType::NoQuant};
+    int quant_group_size{-1};
+    bool rope_is_neox_style;
 
     aclrtStream model_stream;
 
