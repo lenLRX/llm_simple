@@ -16,3 +16,9 @@
 2. ```bash scripts/example_text_completion_llama2_7B_fp16_orangepi.sh```
 3. ```bash scripts/example_chat_llama2_7B_awq_4bit_orangepi.sh```
 4. ```bash scripts/example_text_completion_llama2_7B_awq_4bit_orangepi.sh```
+
+# 性能
+|场景|ttft(ms)|decode(ms/token)|
+|---|---|---|
+|llama2-7B-AWQ-4bit|886|176.7|
+|llama2-7B-FP16|4498|568.4|

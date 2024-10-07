@@ -1049,6 +1049,9 @@ TEST(NpuOpsTest, GemmAWQ4Bit) {
         input_zero_fp16_map = input_zero_fp32_map.cast<Eigen::half>();
         input_zero_fp32_map = input_zero_fp16_map.cast<float>();
 
+        // move weight offset to zero
+        input_zero_fp16_map = input_zero_fp16_map - input_zero_fp32_map.constant(8.0f).cast<Eigen::half>();
+
         Eigen::TensorMap<Eigen::Tensor<float, 3, Eigen::RowMajor|Eigen::DontAlign>> 
         input_scale_fp32_map((float*)host_scale, num_group, 1, n);
         
@@ -1058,6 +1061,9 @@ TEST(NpuOpsTest, GemmAWQ4Bit) {
         input_scale_fp16_map = (input_scale_fp32_map / input_scale_fp32_map.constant(16.0f)).cast<Eigen::half>();
         input_scale_fp32_map = input_scale_fp16_map.cast<float>();
 
+        auto float_to_u4 = [](float x)->uint8_t {
+          return (static_cast<uint8_t>(x) + 8)&0xf;
+        };
 
         // (x, 4, 64, 2) -> (x, 64, 4, 2)
         for (int i1 = 0; i1 < rhs_element_cnt/512; ++i1) {
@@ -1071,7 +1077,7 @@ TEST(NpuOpsTest, GemmAWQ4Bit) {
                     int i3_stride_s4 = 4;
                     int u8_offset = i1 * i1_stride_u8 + i2 * i2_stride_u8 + i3 * i3_stride_u8;
                     host_weight_s4[i1 * i1_stride_s4 + i2 * i2_stride_s4 + i3 * i3_stride_s4]
-                        = (static_cast<uint8_t>(host_rhs_nz[u8_offset])) | (static_cast<uint8_t>(host_rhs_nz[u8_offset + 1]) << 4);
+                        = (float_to_u4(host_rhs_nz[u8_offset])) | (float_to_u4(host_rhs_nz[u8_offset + 1]) << 4);
                 }
             }
         }

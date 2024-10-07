@@ -47,6 +47,7 @@ def main():
             d1 = v.size // 512
             v = v.reshape(d1, 4, 64, 2)
             v = np.transpose(v, (0, 2, 1, 3))
+            v = (v + 8)&0xf
             v[..., 0] = v[..., 0] | (v[...,1] << 4)
             v = np.ascontiguousarray(v[..., 0])
             print(f"weight output shape {v.shape}, dtype: {v.dtype}")
@@ -59,6 +60,7 @@ def main():
             v[..., 0] = v[..., 0] & 0xf
             v[..., 1] = (v[..., 1] >> 4) & 0xf
             v = v.astype("float16")
+            v = v - 8.0
             n_dim = n_dim * 2
             v = v.reshape(k_dim, n_dim//8, 2, 4)
             v = np.transpose(v, (0, 1, 3, 2))
