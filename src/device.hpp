@@ -32,7 +32,7 @@ private:
 
     std::list<NPUAllocatorEntry> freelist;
     std::unordered_map<void*, size_t> ptr_size;
-    size_t dev_mem_max{8*1024ULL*1024ULL*1024ULL};
+    size_t dev_mem_max{2*1024ULL*1024ULL*1024ULL};
     size_t dev_mem_max_entry_num{128};
     size_t max_record{0};
     size_t allocated_bytes{0};
