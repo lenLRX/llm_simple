@@ -13,12 +13,15 @@ sed -e "s/\[\[USER_NAME\]\]/$USER_NAME/g" \
      $PROMPT_TEMPLATE > $PROMPT_FILE
 
 ./build/src/llama2_main \
---config=llama/llama2/7B/params.json \
+--config=llama/llama2/13B/params.json \
 --tokenizer=llama/llama2/tokenizer.model \
---weight=/data/llama2/7B/model_output \
+--weight=/data/Llama-2-13B-AWQ/llama2_13B_awq_4bit \
+--quant_method=awq_4bit \
+--quant_group_size=128 \
 --device_type=npu \
 --max_seq_len=2048 \
 --log_level=info \
+--rope_is_neox_style=true \
 --reverse_promt="${USER_NAME}:" \
 --i \
 --prompt_file=$PROMPT_FILE

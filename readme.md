@@ -5,8 +5,11 @@
 # 权重转换
 ## LLAMA2-7B FP16 (支持llama官方发布的格式, 包含tokenizer.model,params.json,consolidated.00.pth文件)
 ```python3 scripts/convert_llama2_weight.py --input_dir <llama_path> --model_size 7B --output_dir <output dir>```
-## LLAMA2-AWQ 4bit
+## LLAMA2-7B-AWQ 4bit
 权重下载链接:[model.safetensors](https://huggingface.co/TheBloke/Llama-2-7B-AWQ/blob/main/model.safetensors)
+```python3 scripts/convert_llama_awq_4bit.py --input_safetensor <model.safetensors path> --output_dir <weight output path>```
+## LLAMA2-13B-AWQ 4bit
+权重下载链接:[model.safetensors](https://huggingface.co/TheBloke/Llama-2-13B-AWQ/resolve/main/model.safetensors)
 ```python3 scripts/convert_llama_awq_4bit.py --input_safetensor <model.safetensors path> --output_dir <weight output path>```
 
 # 运行
@@ -16,9 +19,12 @@
 2. ```bash scripts/example_text_completion_llama2_7B_fp16_orangepi.sh```
 3. ```bash scripts/example_chat_llama2_7B_awq_4bit_orangepi.sh```
 4. ```bash scripts/example_text_completion_llama2_7B_awq_4bit_orangepi.sh```
+5. ```bash scripts/example_chat_llama2_13B_awq_4bit_orangepi.sh```
+6. ```bash scripts/example_text_completion_llama2_13B_awq_4bit_orangepi.sh```
 
 # 性能
 |场景|ttft(ms)|decode(ms/token)|
 |---|---|---|
 |llama2-7B-AWQ-4bit|886|176.7|
 |llama2-7B-FP16|4498|568.4|
+|llama2-13B-AWQ-4bit|1819|320.1|

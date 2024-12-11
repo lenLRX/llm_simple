@@ -575,7 +575,7 @@ bool Llamma2TransformerLayerImpl::Init(Llama2Model* model, int layer_no) {
     hidden_dim = model->hidden_dim;
     head_dim = model->hidden_dim / model->n_heads;
     n_heads = model->n_heads;
-    ffn_hidden = (4 * hidden_dim * 2) / 3;
+    ffn_hidden = 4 * ((hidden_dim * 2) / 3);
     ffn_hidden = (ffn_hidden + model->multiple_of - 1) / model->multiple_of * model->multiple_of;
     max_seq_len = model->max_seq_len;
     return true;

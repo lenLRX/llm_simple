@@ -13,8 +13,8 @@ sed -e "s/\[\[USER_NAME\]\]/$USER_NAME/g" \
      $PROMPT_TEMPLATE > $PROMPT_FILE
 
 ./build/src/llama2_main \
---config=/data/llama2/7B/params.json \
---tokenizer=/data/llama2/tokenizer.model \
+--config=llama/llama2/7B/params.json \
+--tokenizer=llama/llama2/tokenizer.model \
 --weight=/data/llama2_7b_awq/llama2_7b_awq_4bit/  \
 --quant_method=awq_4bit \
 --quant_group_size=128 \

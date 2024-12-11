@@ -20,9 +20,20 @@ find_package (Eigen3 REQUIRED NO_MODULE)
 enable_testing()
 find_package(GTest REQUIRED)
 
-add_executable(op_test npu_operator_test.cpp)
+add_executable(op_test npu_operator_test.cpp rms_norm_layer_test.cpp gemm_awq_4bit_test.cpp npu_op_test_util.cpp)
 target_include_directories(op_test PUBLIC ${EIGEN3_INCLUDE_DIR} ${ACL_PATH}/include ../prebuild)
 target_link_directories(op_test PUBLIC ${ACL_PATH}/lib64 ../prebuild)
 target_link_libraries(op_test GTest::gtest GTest::gtest_main sentencepiece boost_program_options boost_system boost_filesystem fmt ascendcl runtime npu_ops)
 
 add_test(NPU_operator_test op_test)
+
+add_executable(op_test_rms_norm rms_norm_layer_main.cpp rms_norm_layer_test.cpp npu_op_test_util.cpp)
+target_include_directories(op_test_rms_norm PUBLIC ${EIGEN3_INCLUDE_DIR} ${ACL_PATH}/include ../prebuild)
+target_link_directories(op_test_rms_norm PUBLIC ${ACL_PATH}/lib64 ../prebuild)
+target_link_libraries(op_test_rms_norm  sentencepiece boost_program_options boost_system boost_filesystem fmt ascendcl runtime npu_ops)
+
+add_executable(op_test_gemm_awq_4bit gemm_awq_4bit_main.cpp gemm_awq_4bit_test.cpp npu_op_test_util.cpp)
+target_include_directories(op_test_gemm_awq_4bit PUBLIC ${EIGEN3_INCLUDE_DIR} ${ACL_PATH}/include ../prebuild)
+target_link_directories(op_test_gemm_awq_4bit PUBLIC ${ACL_PATH}/lib64 ../prebuild)
+target_link_libraries(op_test_gemm_awq_4bit  sentencepiece boost_program_options boost_system boost_filesystem fmt ascendcl runtime npu_ops)
+
