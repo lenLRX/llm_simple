@@ -37,3 +37,8 @@ target_include_directories(op_test_gemm_awq_4bit PUBLIC ${EIGEN3_INCLUDE_DIR} ${
 target_link_directories(op_test_gemm_awq_4bit PUBLIC ${ACL_PATH}/lib64 ../prebuild)
 target_link_libraries(op_test_gemm_awq_4bit  sentencepiece boost_program_options boost_system boost_filesystem fmt ascendcl runtime npu_ops)
 
+add_executable(op_test_flash_attn flash_attn_main.cpp flash_attn_test.cpp npu_op_test_util.cpp)
+target_include_directories(op_test_flash_attn PUBLIC ${EIGEN3_INCLUDE_DIR} ${ACL_PATH}/include ../prebuild)
+target_link_directories(op_test_flash_attn PUBLIC ${ACL_PATH}/lib64 ../prebuild)
+target_link_libraries(op_test_flash_attn  sentencepiece boost_program_options boost_system boost_filesystem fmt ascendcl runtime npu_ops)
+
