@@ -11,6 +11,7 @@ enum DataType : int32_t {
   DT_UINT32,
   DT_INT32,
   DT_FLOAT16,
+  DT_BFLOAT16,
   DT_FLOAT32,
   DT_UINT64,
   DT_INT64,
@@ -26,6 +27,7 @@ inline static size_t SizeOfTensor(size_t size, DataType dt) {
   case DT_UINT32:
     return size * sizeof(uint32_t);
   case DT_FLOAT16:
+  case DT_BFLOAT16:
     return size * sizeof(uint16_t);
   case DT_FLOAT32:
     return size * sizeof(uint32_t);

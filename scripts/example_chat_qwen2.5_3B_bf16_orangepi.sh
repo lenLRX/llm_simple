@@ -1,0 +1,14 @@
+./build/src/llama2_main \
+--config=/ssd/models/Qwen2.5-3B-Instruct/config.json \
+--tokenizer=/ssd/models/Qwen2.5-3B-Instruct/ \
+--weight=/ssd/models/Qwen2.5-3B-Instruct_converted \
+--model_type=qwen2 \
+--device_type=npu \
+--max_seq_len=2048 \
+--max_gen_token=1024 \
+--temperature=0.6 \
+--debug_print=false \
+--log_level=info \
+--rope_is_neox_style=true \
+--i \
+--prompt=" "

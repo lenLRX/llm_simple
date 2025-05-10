@@ -7,6 +7,11 @@ void npu_flash_attn_layer(void *output_dev, void *q_dev, void *k_dev,
                           void *v_dev, int m, int n, int offset, int head_num,
                           int head_dim, DataType dt, aclrtStream &stream);
 
+void npu_flash_attn_gqa_layer(void *output_dev, void *q_dev, void *k_dev,
+                              void *v_dev, int m, int n, int offset,
+                              int group_size, int kv_head_num, int head_dim,
+                              DataType dt, aclrtStream &stream);
+
 void npu_flash_attn_opt_prefill_layer(void *output_dev, void *q_dev,
                                       void *k_dev, void *v_dev, int m, int n,
                                       int offset, int head_num, int head_dim,
@@ -35,6 +40,11 @@ void npu_rope_layer(void *output_q_dev, void *output_k_dev, void *freqs_cis_dev,
                     void *input_q_dev, void *input_k_dev, int start_pos,
                     int cur_size, int n_heads, int hidden_dim,
                     bool is_neox_style, DataType dt, aclrtStream &stream);
+
+void npu_rope_single_layer(void *output_x_dev, void *freqs_cis_dev,
+                           void *input_x_dev, int start_pos, int cur_size,
+                           int n_heads, int hidden_dim, bool is_neox_style,
+                           DataType dt, aclrtStream &stream);
 
 void npu_rope_layer_vllm(void *output_q_dev, void *output_k_dev,
                          void *freqs_cis_dev, void *input_q_dev,
@@ -77,6 +87,10 @@ void npu_matmul_layer(void *output_dev, void *lhs_dev, void *rhs_dev, int m,
 void npu_matmul_nz_layer(void *output_dev, void *lhs_dev, void *rhs_dev, int m,
                          int n, int k, DataType dt, aclrtStream &stream);
 
+void npu_matmul_bias_nz_layer(void *output_dev, void *lhs_dev, void *rhs_dev,
+                              void *bias_dev, int m, int n, int k, DataType dt,
+                              aclrtStream &stream);
+
 void npu_mamtul_weight_transpose_layer(void *output_dev, void *input, int n,
                                        int k, DataType dt, aclrtStream &stream);
 
@@ -84,3 +98,9 @@ void npu_matmul_nz_awq_4bit_layer(void *output_dev, void *lhs_dev,
                                   void *weight_dev, void *zero_dev,
                                   void *scale_dev, int m, int n, int k,
                                   DataType dt, aclrtStream &stream);
+
+void npu_matmul_nz_awq_4bit_bias_layer(void *output_dev, void *lhs_dev,
+                                       void *weight_dev, void *zero_dev,
+                                       void *scale_dev, void *bias_dev, int m,
+                                       int n, int k, DataType dt,
+                                       aclrtStream &stream);

@@ -1,6 +1,7 @@
 log.txt
 cpu_log.txt
 test_tiny_orangepi.sh
+*.data
 *.bin
 *.json
 build/
