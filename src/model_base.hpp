@@ -41,9 +41,9 @@ class InferenceCtx {
 public:
   InferenceCtx(ModelBase *model, size_t cur_pos, size_t prev_pos);
   ModelBase *model;
-  size_t cur_pos;
-  size_t prev_pos;
-  size_t cur_size;
+  int cur_pos;
+  int prev_pos;
+  int cur_size;
   aclrtStream npu_stream{nullptr};
 };
 
@@ -228,6 +228,7 @@ public:
                        const std::string &zero_path,
                        const std::string &scale_path, size_t n, size_t k,
                        QuantType quant_type);
+  virtual bool AddBias(const std::string &bias_path);
   virtual void UnInit();
 
   size_t n;
@@ -257,6 +258,7 @@ public:
   bool InitAWQ(ModelBase *model, const std::string &weight_path,
                const std::string &zero_path, const std::string &scale_path,
                size_t n, size_t k, QuantType quant_type);
+  bool AddBias(const std::string &bias_path);
   void UnInit();
   MatmulLayerImpl *impl{nullptr};
 };
@@ -299,12 +301,12 @@ public:
   virtual void UnInit();
 
   DataType dtype;
-  size_t ffn_hidden;
-  size_t hidden_dim;
-  size_t head_dim;
-  size_t n_heads;
-  size_t n_kv_heads;
-  size_t max_seq_len;
+  int ffn_hidden;
+  int hidden_dim;
+  int head_dim;
+  int n_heads;
+  int n_kv_heads;
+  int max_seq_len;
 };
 
 class Qwen2TransformerLayer {

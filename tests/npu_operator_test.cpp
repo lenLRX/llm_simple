@@ -867,7 +867,7 @@ TEST(NpuOpsTest, GemmAWQ4Bit) {
   aclrtStream stream = nullptr;
 
   GemmAWQ4BitOpTest op_test;
-  op_test.Init(hidden_dim, ffn_hidden, ffn_hidden);
+  op_test.Init(hidden_dim, ffn_hidden, ffn_hidden, false);
 
   std::random_device rd;
   std::mt19937 gen(rd());

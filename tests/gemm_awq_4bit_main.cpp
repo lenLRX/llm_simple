@@ -8,12 +8,15 @@ int main(int argc, char **argv) {
   int m;
   int n;
   int k;
+  bool bias;
 
   po::options_description desc("GemmAWQ4BitOpTest options");
   desc.add_options()("help", "produce help message")                    //
       ("m", po::value<int>(&m)->default_value(2048), "m. default:2048") //
       ("n", po::value<int>(&n)->default_value(2048), "n. default:2048") //
-      ("k", po::value<int>(&k)->default_value(2048), "k. default:2048");
+      ("k", po::value<int>(&k)->default_value(2048), "k. default:2048")
+      ("bias", po::value<bool>(&bias)->default_value(false), "bias. default:false");
+
 
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -29,7 +32,7 @@ int main(int argc, char **argv) {
   CHECK_ACL(aclrtCreateContext(&context, deviceId));
 
   GemmAWQ4BitOpTest op_test;
-  op_test.Init(m, n, k);
+  op_test.Init(m, n, k, bias);
   bool test_result = op_test.Run(m, n, k);
   op_test.CleanUp();
 

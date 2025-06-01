@@ -172,7 +172,6 @@ int main(int argc, char **argv) {
       model_config.data_type = DT_FLOAT16;
     } else if (model_config.model_type == "qwen2") {
       model = new Qwen2Model();
-      model_config.data_type = DT_BFLOAT16;
     } else {
       spdlog::critical("invalid model_type type {}", model_config.model_type);
       return 1;

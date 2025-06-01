@@ -149,14 +149,32 @@ auto QwenTokenizer::is_special_id(int id) const -> bool {
 
 void Qwen2HFTokenizer::from_pretrained(const std::string &tokenizer_dir) {
   py_transformers_module =
-      PyImport_ImportModule("transformers.models.qwen2.tokenization_qwen2");
+      PyImport_ImportModule("transformers");
   if (py_transformers_module == nullptr) {
     PyErr_Print();
     throw std::exception();
   }
 
+  
+
+  nlohmann::json tokenizer_config;
+
+  auto cfg_json = boost::filesystem::path(tokenizer_dir) / "tokenizer_config.json";
+
+
+  std::ifstream config_fs(cfg_json.c_str());
+  if (!config_fs) {
+    spdlog::error("failed to open tokenizer conifg {}", cfg_json.c_str());
+    throw std::exception();
+  }
+
+  config_fs >> tokenizer_config;
+
+  auto tokenizer_class = tokenizer_config["tokenizer_class"].get<std::string>();
+  spdlog::info("using tokenizer_class {}", tokenizer_class);
+
   py_tokenizer_clz =
-      PyObject_GetAttrString(py_transformers_module, "Qwen2Tokenizer");
+      PyObject_GetAttrString(py_transformers_module, tokenizer_class.c_str());
   if (py_transformers_module == nullptr) {
     PyErr_Print();
     throw std::exception();
@@ -193,6 +211,13 @@ void Qwen2HFTokenizer::from_pretrained(const std::string &tokenizer_dir) {
     throw std::exception();
   }
 
+  PyObject* py_eos = PyObject_GetAttrString(py_tokenizer, "eos_token");
+  if (py_eos == nullptr) {
+    PyErr_Print();
+    throw std::exception();
+  }
+  std::string eos_str = PyUnicode_AsUTF8(py_eos);
+
   nlohmann::json js_tok;
   std::ifstream tok_fs(
       (boost::filesystem::path(tokenizer_dir) / "tokenizer.json").c_str());
@@ -200,7 +225,7 @@ void Qwen2HFTokenizer::from_pretrained(const std::string &tokenizer_dir) {
   auto add_tokens = js_tok["added_tokens"];
 
   for (const auto &d : add_tokens) {
-    if (d["content"].get<std::string>() == "<|endoftext|>") {
+    if (d["content"].get<std::string>() == eos_str) {
       eos_token_id = d["id"].get<int>();
     }
     if (d["content"].get<std::string>() == "<|im_start|>") {

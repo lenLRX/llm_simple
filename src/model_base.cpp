@@ -517,6 +517,10 @@ bool MatmulLayerImpl::InitAWQ(ModelBase *model, const std::string &weight_path,
   return true;
 }
 
+bool MatmulLayerImpl::AddBias(const std::string &bias_path) {
+  return false;
+}
+
 void MatmulLayerImpl::UnInit() {}
 
 MatmulLayer::~MatmulLayer() {}
@@ -581,6 +585,10 @@ bool MatmulLayer::InitAWQ(ModelBase *model, const std::string &weight_path,
   }
   return impl->InitAWQ(model, weight_path, zero_path, scale_path, n, k,
                        quant_type);
+}
+
+bool MatmulLayer::AddBias(const std::string &bias_path) {
+  return impl->AddBias(bias_path);
 }
 
 void MatmulLayer::UnInit() {}

@@ -110,5 +110,6 @@ public:
                        const std::string &zero_path,
                        const std::string &scale_path, size_t n, size_t k,
                        QuantType quant_type) override;
+  virtual bool AddBias(const std::string &bias_path) override;
   virtual void UnInit() override;
 };

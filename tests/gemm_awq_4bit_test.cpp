@@ -17,16 +17,19 @@
 #include "npu_op_test_util.h"
 #include "npu_ops.h"
 
-void GemmAWQ4BitOpTest::Init(size_t max_m, size_t max_n, size_t max_k) {
+void GemmAWQ4BitOpTest::Init(size_t max_m, size_t max_n, size_t max_k,
+                             bool bias) {
   this->max_m = max_m;
   this->max_n = max_n;
   this->max_k = max_k;
+  this->bias = bias;
 
   max_lhs_buffer_size = max_m * max_k;
   max_weight_buffer_size = max_k * max_n;
   max_zero_buffer_size = max_k * max_n / group_size;
   max_scale_buffer_size = max_k * max_n / group_size;
   max_output_buffer_size = max_k * max_n;
+  max_bias_buffer_size = max_n;
 
   host_lhs = new float[max_lhs_buffer_size];
   host_rhs = new float[max_weight_buffer_size];
@@ -34,6 +37,7 @@ void GemmAWQ4BitOpTest::Init(size_t max_m, size_t max_n, size_t max_k) {
   host_zero = new float[max_zero_buffer_size];
   host_scale = new float[max_scale_buffer_size];
   host_output = new float[max_output_buffer_size];
+  host_bias = new float[max_bias_buffer_size];
   host_lhs_f16 = new Eigen::half[max_lhs_buffer_size];
   host_weight_s4 = new uint8_t[max_weight_buffer_size / 2];
   host_zero_f16 = new Eigen::half[max_zero_buffer_size];
@@ -56,10 +60,13 @@ void GemmAWQ4BitOpTest::Init(size_t max_m, size_t max_n, size_t max_k) {
   CHECK_ACL(aclrtMalloc((void **)&dev_output_f16,
                         max_output_buffer_size * sizeof(aclFloat16),
                         ACL_MEM_MALLOC_HUGE_FIRST));
+  CHECK_ACL(aclrtMalloc((void **)&dev_bias_f32,
+                        max_bias_buffer_size * sizeof(float),
+                        ACL_MEM_MALLOC_HUGE_FIRST));
 }
 
 bool GemmAWQ4BitOpTest::Run(size_t m, size_t n, size_t k) {
-  spdlog::info("GemmAWQ4BitOpTest::Run {{{},{},{}}}", m, n, k);
+  spdlog::info("GemmAWQ4BitOpTest::Run {{{},{},{}}}, bias={}", m, n, k, bias);
 
   size_t n1 = n / 16;
   size_t lhs_element_cnt = m * k;
@@ -71,6 +78,10 @@ bool GemmAWQ4BitOpTest::Run(size_t m, size_t n, size_t k) {
   make_random_float_uint4(host_rhs, rhs_element_cnt);
   make_random_float_uint4(host_zero, zero_scale_cnt);
   make_random_float(host_scale, zero_scale_cnt);
+  make_random_float(host_bias, n);
+
+  Eigen::TensorMap<Eigen::Tensor<float, 2, Eigen::RowMajor | Eigen::DontAlign>>
+      bias_fp32_map((float *)host_bias, 1, n);
 
   Eigen::TensorMap<Eigen::Tensor<float, 2, Eigen::RowMajor | Eigen::DontAlign>>
       golden_fp32_map((float *)golden_fp32, m, n);
@@ -155,10 +166,18 @@ bool GemmAWQ4BitOpTest::Run(size_t m, size_t n, size_t k) {
   CHECK_ACL(aclrtMemcpy(dev_scale_fp16, zero_scale_cnt * sizeof(aclFloat16),
                         host_scale_f16, zero_scale_cnt * sizeof(aclFloat16),
                         ACL_MEMCPY_HOST_TO_DEVICE));
+  if (bias) {
+    CHECK_ACL(aclrtMemcpy(dev_bias_f32, n * sizeof(float), host_bias,
+                          n * sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE));
+    npu_matmul_nz_awq_4bit_bias_layer(
+        dev_output_f16, dev_lhs_f16, dev_weight_s4, dev_zero_fp16,
+        dev_scale_fp16, dev_bias_f32, m, n, k, DT_FLOAT16, stream);
+  } else {
 
-  npu_matmul_nz_awq_4bit_layer(dev_output_f16, dev_lhs_f16, dev_weight_s4,
-                               dev_zero_fp16, dev_scale_fp16, m, n, k,
-                               DT_FLOAT16, stream);
+    npu_matmul_nz_awq_4bit_layer(dev_output_f16, dev_lhs_f16, dev_weight_s4,
+                                 dev_zero_fp16, dev_scale_fp16, m, n, k,
+                                 DT_FLOAT16, stream);
+  }
   Eigen::array<size_t, 3> brc_dim = {1, group_size, 1};
 
   auto tmp_expr = ((input_rhs_map - input_zero_fp32_map.broadcast(brc_dim))
@@ -171,6 +190,12 @@ bool GemmAWQ4BitOpTest::Run(size_t m, size_t n, size_t k) {
       Eigen::IndexPair<int>(1, 0)};
   golden_fp32_map = input_lhs_map.contract(
       tmp_expr.cast<Eigen::half>().cast<float>(), product_dims);
+
+  if (bias) {
+    Eigen::array<size_t, 2> brc_dim = {m, 1};
+
+    golden_fp32_map = golden_fp32_map + bias_fp32_map.broadcast(brc_dim);
+  }
 
   CHECK_ACL(aclrtSynchronizeStream(stream));
 
@@ -200,6 +225,7 @@ void GemmAWQ4BitOpTest::CleanUp() {
   delete[] host_zero_f16;
   delete[] host_scale_f16;
   delete[] host_output_f16;
+  delete[] host_bias;
   delete[] golden_fp32;
 
   CHECK_ACL(aclrtFree(dev_lhs_f16));
@@ -207,4 +233,5 @@ void GemmAWQ4BitOpTest::CleanUp() {
   CHECK_ACL(aclrtFree(dev_zero_fp16));
   CHECK_ACL(aclrtFree(dev_scale_fp16));
   CHECK_ACL(aclrtFree(dev_output_f16));
+  CHECK_ACL(aclrtFree(dev_bias_f32));
 }

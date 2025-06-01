@@ -128,10 +128,27 @@ bool Qwen2Model::Init() {
   norm_eps = config.config["rms_norm_eps"].get<float>();
   intermediate_size = config.config["intermediate_size"].get<int>();
 
+
+  std::string torch_dtype_str = config.config["torch_dtype"].get<std::string>();
+  if (torch_dtype_str == "bfloat16") {
+    config.data_type = DT_BFLOAT16;
+  }
+  else if (torch_dtype_str == "float16") {
+    config.data_type = DT_FLOAT16;
+  }
+  else {
+    spdlog::error("not supported torch dtype {}", torch_dtype_str);
+  }
+
   qwen_tokenizer.from_pretrained(config.tok_path);
 
   n_words = config.config["vocab_size"].get<int>();
   pad_id = qwen_tokenizer.eos_token_id;
+
+  if (has_awq_quantization(config.config)) {
+    config.q_type = QuantType::AWQ_4B;
+    spdlog::info("using awq 4bit");
+  }
 
   InitFreqCIS(config.config["rope_theta"].get<float>(), config.data_type);
 
@@ -257,18 +274,9 @@ int Qwen2Model::GenerateNextToken(const std::vector<int32_t> &input_ids,
 
   if (config.debug_print) {
     auto print_h = h->to(DEV_CPU);
-    Eigen::TensorMap<
-        Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>>
-        embed_map(static_cast<Eigen::bfloat16 *>(print_h->data_ptr),
-                  ctx.cur_size, hidden_dim);
-
-    Eigen::array<Eigen::Index, 2> offsets = {0, 0};
-    Eigen::array<Eigen::Index, 2> extents = {
-        static_cast<Eigen::Index>(ctx.cur_size), 16};
-    Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>
-        print_slice = embed_map.slice(offsets, extents);
-    std::cout << "embed output \n" << print_slice << "\n";
-    // break;
+    std::cout << "embed output \n" << print_tensor<2>(print_h->data_ptr, config.data_type, 
+                                                      {ctx.cur_size, hidden_dim},
+                                                      {ctx.cur_size, 16}) << "\n";
   }
 
   auto causlmask = causual_mask_layer.Forward(ctx);
@@ -278,16 +286,9 @@ int Qwen2Model::GenerateNextToken(const std::vector<int32_t> &input_ids,
 
     if (config.debug_print) {
       auto print_h = h->to(DEV_CPU);
-      Eigen::TensorMap<
-          Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>>
-          h_map(static_cast<Eigen::bfloat16 *>(print_h->data_ptr), ctx.cur_size,
-                hidden_dim);
-      Eigen::array<Eigen::Index, 2> offsets = {0, 0};
-      Eigen::array<Eigen::Index, 2> extents = {
-          static_cast<Eigen::Index>(ctx.cur_size), 4};
-      Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>
-          print_slice = h_map.slice(offsets, extents);
-      std::cout << "h_map " << i << " output \n" << print_slice << "\n";
+      std::cout << "h_map " << i << " output \n" << print_tensor<2>(print_h->data_ptr, config.data_type, 
+                                                      {ctx.cur_size, hidden_dim},
+                                                      {ctx.cur_size, 4}) << "\n";
     }
   }
 
@@ -296,16 +297,9 @@ int Qwen2Model::GenerateNextToken(const std::vector<int32_t> &input_ids,
   if (config.debug_print) {
     CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
     auto print_h = h->to(DEV_CPU);
-    Eigen::TensorMap<
-        Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>>
-        h_map(static_cast<Eigen::bfloat16 *>(print_h->data_ptr), ctx.cur_size,
-              hidden_dim);
-    Eigen::array<Eigen::Index, 2> offsets = {0, 0};
-    Eigen::array<Eigen::Index, 2> extents = {
-        static_cast<Eigen::Index>(ctx.cur_size), 4};
-    Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>
-        print_slice = h_map.slice(offsets, extents);
-    std::cout << "h_map after norm output \n" << print_slice << "\n";
+    std::cout << "h_map after norm output \n" << print_tensor<2>(print_h->data_ptr, config.data_type, 
+                                                      {ctx.cur_size, hidden_dim},
+                                                      {ctx.cur_size, 4}) << "\n";
   }
 
   h = last_mm.Forward(h, ctx);
@@ -313,16 +307,9 @@ int Qwen2Model::GenerateNextToken(const std::vector<int32_t> &input_ids,
   if (config.debug_print) {
     CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
     auto print_h = h->to(DEV_CPU);
-    Eigen::TensorMap<
-        Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>>
-        h_map(static_cast<Eigen::bfloat16 *>(print_h->data_ptr), ctx.cur_size,
-              n_words);
-    Eigen::array<Eigen::Index, 2> offsets = {0, 0};
-    Eigen::array<Eigen::Index, 2> extents = {
-        static_cast<Eigen::Index>(ctx.cur_size), 4};
-    Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>
-        print_slice = h_map.slice(offsets, extents);
-    std::cout << "h_map last mm output \n" << print_slice << "\n";
+    std::cout << "h_map last mm output \n" << print_tensor<2>(print_h->data_ptr, config.data_type, 
+                                                      {ctx.cur_size, n_words},
+                                                      {ctx.cur_size, 4}) << "\n";
   }
 
   CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));

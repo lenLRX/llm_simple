@@ -705,6 +705,7 @@ bool Llamma2TransformerLayerNPUImpl::Init(ModelBase *model, int layer_no) {
     INIT_AWQ_MM(mlp, gate, ffn_hidden, hidden_dim);
     INIT_AWQ_MM(mlp, down, hidden_dim, ffn_hidden);
     INIT_AWQ_MM(mlp, up, ffn_hidden, hidden_dim);
+#undef INIT_AWQ_MM
   }
 
   auto inv_freq_name = std::string("model.layers.") + std::to_string(layer_no) +
@@ -747,54 +748,31 @@ Qwen2TransformerLayerNPUImpl::Forward(std::shared_ptr<Tensor> input,
   spdlog::debug("v_proj.Forward");
   auto v = v_proj.Forward(pre_norm_out, ctx);
 
-  CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
-
   if (ctx.model->config.debug_print) {
-    auto pre_norm_out_cpu = pre_norm_out->to(DEV_CPU);
-    Eigen::TensorMap<
-        Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>>
-        pre_norm_out_map(
-            static_cast<Eigen::bfloat16 *>(pre_norm_out_cpu->data_ptr),
-            ctx.cur_size, hidden_dim);
+    CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
 
-    Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-    Eigen::array<Eigen::Index, 2> print_extents = {
-        static_cast<Eigen::Index>(ctx.cur_size), 4};
-    Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>
-        print_slice = pre_norm_out_map.slice(print_offsets, print_extents);
-    std::cout << "pre_norm output \n" << print_slice << "\n";
-    pre_norm_out_cpu->to_file("pre_norm_output.bin");
+    auto pre_norm_out_cpu = pre_norm_out->to(DEV_CPU);
+    std::cout << "pre_norm output \n"
+              << print_tensor<2>(pre_norm_out_cpu->data_ptr,
+                                 ctx.model->config.data_type,
+                                 {ctx.cur_size, hidden_dim}, {ctx.cur_size, 4})
+              << "\n";
   }
 
   if (ctx.model->config.debug_print) {
     auto q_cpu = q->to(DEV_CPU);
-    Eigen::TensorMap<
-        Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>>
-        q_map(static_cast<Eigen::bfloat16 *>(q_cpu->data_ptr), ctx.cur_size,
-              hidden_dim);
-
-    Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-    Eigen::array<Eigen::Index, 2> print_extents = {
-        static_cast<Eigen::Index>(ctx.cur_size), 4};
-    Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>
-        print_slice = q_map.slice(print_offsets, print_extents);
-    std::cout << "q emb input \n" << print_slice << "\n";
-    q_cpu->to_file("q_cpu.data");
+    std::cout << "q emb input \n"
+              << print_tensor<2>(q_cpu->data_ptr, ctx.model->config.data_type,
+                                 {ctx.cur_size, hidden_dim}, {ctx.cur_size, 4})
+              << "\n";
   }
 
   if (ctx.model->config.debug_print) {
     auto k_cpu = k->to(DEV_CPU);
-    Eigen::TensorMap<
-        Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>>
-        k_map(static_cast<Eigen::bfloat16 *>(k_cpu->data_ptr), ctx.cur_size,
-              n_kv_heads * head_dim);
-
-    Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-    Eigen::array<Eigen::Index, 2> print_extents = {
-        static_cast<Eigen::Index>(ctx.cur_size), 4};
-    Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>
-        print_slice = k_map.slice(print_offsets, print_extents);
-    std::cout << "k emb input \n" << print_slice << "\n";
+    std::cout << "k emb input \n"
+              << print_tensor<2>(k_cpu->data_ptr, ctx.model->config.data_type,
+                                 {ctx.cur_size, n_kv_heads * head_dim}, {ctx.cur_size, 4})
+              << "\n";
   }
 
   spdlog::debug("q size {} k size {}", q->data_size, k->data_size);
@@ -808,11 +786,6 @@ Qwen2TransformerLayerNPUImpl::Forward(std::shared_ptr<Tensor> input,
   spdlog::debug("n_heads {} n_kv_heads {} head_dim {}", n_heads, n_kv_heads,
                 head_dim);
   spdlog::debug("prev_pos {} cur_size {}", ctx.prev_pos, ctx.cur_size);
-
-  if (ctx.model->config.debug_print) {
-    std::ofstream ofs("freqs_cis.data", std::ios::binary);
-    ofs.write((const char *)ctx.model->freq_cis, head_dim * max_seq_len * 2);
-  }
 
   npu_rope_single_layer(q_emb->data_ptr, ctx.model->freq_cis, q->data_ptr,
                         ctx.prev_pos, ctx.cur_size, n_heads, hidden_dim,
@@ -833,20 +806,12 @@ Qwen2TransformerLayerNPUImpl::Forward(std::shared_ptr<Tensor> input,
 
   if (ctx.model->config.debug_print) {
     CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
-
     auto q_emb_cpu = q_emb->to(DEV_CPU);
-    Eigen::TensorMap<
-        Eigen::Tensor<Eigen::bfloat16, 3, Eigen::RowMajor | Eigen::DontAlign>>
-        q_emb_map(static_cast<Eigen::bfloat16 *>(q_emb_cpu->data_ptr),
-                  ctx.cur_size, n_heads, head_dim);
-
-    Eigen::array<Eigen::Index, 3> print_offsets = {
-        0, 0, 0 /*static_cast<Eigen::Index>(head_dim / 2)*/};
-    Eigen::array<Eigen::Index, 3> print_extents = {
-        static_cast<Eigen::Index>(ctx.cur_size), 4, 4};
-    Eigen::Tensor<Eigen::bfloat16, 3, Eigen::RowMajor | Eigen::DontAlign>
-        print_slice = q_emb_map.slice(print_offsets, print_extents);
-    std::cout << "q emb output \n" << print_slice << std::endl;
+    std::cout << "q emb output \n"
+              << print_tensor<3>(
+                     q_emb_cpu->data_ptr, ctx.model->config.data_type,
+                     {ctx.cur_size, n_heads, head_dim}, {ctx.cur_size, 2, 4})
+              << std::endl;
     q_emb_cpu->to_file("q_emb_cpu.data");
   }
 
@@ -855,17 +820,11 @@ Qwen2TransformerLayerNPUImpl::Forward(std::shared_ptr<Tensor> input,
 
   if (ctx.model->config.debug_print) {
     auto k_emb_cpu = k_emb->to(DEV_CPU);
-    Eigen::TensorMap<
-        Eigen::Tensor<Eigen::bfloat16, 3, Eigen::RowMajor | Eigen::DontAlign>>
-        k_emb_map(static_cast<Eigen::bfloat16 *>(k_emb_cpu->data_ptr),
-                  ctx.cur_size, n_kv_heads, head_dim);
-    Eigen::array<Eigen::Index, 3> print_offsets = {
-        0, 0, 0 /*static_cast<Eigen::Index>(head_dim / 2)*/};
-    Eigen::array<Eigen::Index, 3> print_extents = {
-        static_cast<Eigen::Index>(ctx.cur_size), 2, 4};
-    Eigen::Tensor<Eigen::bfloat16, 3, Eigen::RowMajor | Eigen::DontAlign>
-        print_slice = k_emb_map.slice(print_offsets, print_extents);
-    std::cout << "k emb output \n" << print_slice << "\n";
+    std::cout << "k emb output \n"
+              << print_tensor<3>(
+                     k_emb_cpu->data_ptr, ctx.model->config.data_type,
+                     {ctx.cur_size, n_kv_heads, head_dim}, {ctx.cur_size, 2, 4})
+              << "\n";
   }
   // update kv cache
   size_t copy_size = ctx.cur_size * n_kv_heads * head_dim * sizeof(uint16_t);
@@ -888,151 +847,34 @@ Qwen2TransformerLayerNPUImpl::Forward(std::shared_ptr<Tensor> input,
     CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
     auto k_cache_cpu = k_cache->to(DEV_CPU);
     auto v_cache_cpu = v_cache->to(DEV_CPU);
-    Eigen::TensorMap<
-        Eigen::Tensor<Eigen::bfloat16, 3, Eigen::RowMajor | Eigen::DontAlign>>
-        k_cache_map(static_cast<Eigen::bfloat16 *>(k_cache_cpu->data_ptr),
-                    ctx.cur_pos, n_heads, head_dim);
-
-    Eigen::TensorMap<
-        Eigen::Tensor<Eigen::bfloat16, 3, Eigen::RowMajor | Eigen::DontAlign>>
-        v_cache_map(static_cast<Eigen::bfloat16 *>(v_cache_cpu->data_ptr),
-                    ctx.cur_pos, n_kv_heads, head_dim);
-    Eigen::array<Eigen::Index, 3> print_offsets = {0, 0, 0};
-    Eigen::array<Eigen::Index, 3> print_extents = {
-        std::min((Eigen::Index)4, (Eigen::Index)ctx.cur_pos), 2, 4};
-    Eigen::Tensor<Eigen::bfloat16, 3, Eigen::RowMajor | Eigen::DontAlign>
-        print_k_slice = k_cache_map.slice(print_offsets, print_extents);
-    Eigen::Tensor<Eigen::bfloat16, 3, Eigen::RowMajor | Eigen::DontAlign>
-        print_v_slice = v_cache_map.slice(print_offsets, print_extents);
-    std::cout << "k_cache_map output \n" << print_k_slice << "\n";
-    std::cout << "v_cache_map output \n" << print_v_slice << "\n";
-    v_cache_cpu->to_file("v_cache_cpu.data");
+    std::cout << "k_cache_map output \n"
+              << print_tensor<3>(
+                     k_cache_cpu->data_ptr, ctx.model->config.data_type,
+                     {ctx.cur_size, n_kv_heads, head_dim}, {ctx.cur_size, 2, 4})
+              << "\n";
+    std::cout << "v_cache_map output \n"
+              << print_tensor<3>(
+                     v_cache_cpu->data_ptr, ctx.model->config.data_type,
+                     {ctx.cur_size, n_kv_heads, head_dim}, {ctx.cur_size, 2, 4})
+              << "\n";
   }
 
   float qk_scale = 1 / sqrtf(static_cast<float>(head_dim));
   auto tmp_output_tensor =
       Tensor::MakeNPUTensor(hidden_dim * ctx.cur_size, dtype);
 
-  if (true) {
-    npu_flash_attn_gqa_layer(tmp_output_tensor->data_ptr, q_emb->data_ptr,
-                             k_cache->data_ptr, v_cache->data_ptr, ctx.cur_size,
-                             ctx.cur_pos, ctx.prev_pos, n_heads / n_kv_heads,
-                             n_kv_heads, head_dim, dtype, ctx.npu_stream);
-    if (ctx.model->config.debug_print) {
-      CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
-      auto tmp_output_cpu = tmp_output_tensor->to(DEV_CPU);
-      Eigen::TensorMap<
-          Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>>
-          k_emb_map(static_cast<Eigen::bfloat16 *>(tmp_output_cpu->data_ptr),
-                    ctx.cur_size, hidden_dim);
-      Eigen::array<Eigen::Index, 2> print_offsets = {
-          0, 0};
-      Eigen::array<Eigen::Index, 2> print_extents = {
-          static_cast<Eigen::Index>(ctx.cur_size), 4};
-      Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>
-          print_slice = k_emb_map.slice(print_offsets, print_extents);
-      std::cout << "attn gqa output \n" << print_slice << "\n";
-    }
-
-  } else {
-
-    auto q_matmul_k =
-        Tensor::MakeNPUTensor(n_heads * ctx.cur_pos * ctx.cur_size, dtype);
-
-    // (bs, nh, seqlen, hd) @ (bs, nh, hd, cache_len+seqlen) => bs, nh, seqlen,
-    // cache_len+seqlen
-
-    spdlog::debug("n_heads: {} head_dim: {} ctx.cur_size: {} ctx.cur_pos: {}",
-                  n_heads, head_dim, ctx.cur_size, ctx.cur_pos);
-
-    {
-      APP_PROFILE(
-          "BMM_QK",
-          fmt::format(
-              "n_heads: {} head_dim: {} ctx.cur_size: {} ctx.cur_pos: {}",
-              n_heads, head_dim, ctx.cur_size, ctx.cur_pos)
-              .c_str(),
-          ctx.npu_stream, &ctx.model->profiler, ctx.model->is_profiling);
-      npu_batch_matmul_qk_trans_causual_layer(
-          q_matmul_k->data_ptr, q_emb->data_ptr, k_cache->data_ptr, n_heads,
-          ctx.cur_size, ctx.cur_pos, head_dim, ctx.prev_pos, qk_scale, dtype,
-          ctx.npu_stream);
-    }
-
-    if (ctx.model->config.debug_print) {
-      CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
-      auto q_matmul_k_cpu = q_matmul_k->to(DEV_CPU);
-      Eigen::TensorMap<
-          Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor | Eigen::DontAlign>>
-          q_matmul_k_map(static_cast<Eigen::half *>(q_matmul_k->data_ptr),
-                         n_heads, ctx.cur_size, ctx.cur_pos);
-      Eigen::array<Eigen::Index, 3> print_offsets = {0, 0, 0};
-      Eigen::array<Eigen::Index, 3> print_extents = {
-          static_cast<Eigen::Index>(n_heads),
-          static_cast<Eigen::Index>(ctx.cur_size),
-          static_cast<Eigen::Index>(ctx.cur_pos)};
-      Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor | Eigen::DontAlign>
-          print_slice = q_matmul_k_map.slice(print_offsets, print_extents);
-      std::cout << "score output \n" << print_slice << "\n";
-      // q_matmul_k_cpu->to_file("first_qk.data");
-    }
-
-    spdlog::debug("scores = F.softmax(scores.float(), dim=-1).type_as(xq)");
-    auto softmax_qk = softmax.Forward(q_matmul_k, ctx);
-
-    // (N, S, S)
-    if (ctx.model->config.debug_print) {
-      auto softmax_qk_cpu = softmax_qk->to(DEV_CPU);
-      Eigen::TensorMap<
-          Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor | Eigen::DontAlign>>
-          softmax_qk_map(static_cast<Eigen::half *>(softmax_qk_cpu->data_ptr),
-                         n_heads, ctx.cur_size, ctx.cur_pos);
-      Eigen::array<Eigen::Index, 3> print_offsets = {0, 0, 0};
-      Eigen::array<Eigen::Index, 3> print_extents = {
-          static_cast<Eigen::Index>(n_heads),
-          static_cast<Eigen::Index>(ctx.cur_size),
-          static_cast<Eigen::Index>(ctx.cur_pos)};
-      Eigen::Tensor<Eigen::half, 3, Eigen::RowMajor | Eigen::DontAlign>
-          print_slice = softmax_qk_map.slice(print_offsets, print_extents);
-      std::cout << "score softmax output \n" << print_slice << "\n";
-      // softmax_qk_cpu->to_file("first_softmax_qk.data");
-    }
-
-    // (seq_length, n_heads, head_dim) -> (n_heads, seq_length, head_dim)
-
-    spdlog::debug("output = torch.matmul(scores, values)");
-
-    {
-      APP_PROFILE(
-          "BMM_SCORE_V",
-          fmt::format(
-              "n_heads: {} head_dim: {} ctx.cur_size: {} ctx.cur_pos: {}",
-              n_heads, head_dim, ctx.cur_size, ctx.cur_pos)
-              .c_str(),
-          ctx.npu_stream, &ctx.model->profiler, ctx.model->is_profiling);
-      npu_batch_matmul_trans_v_layer(tmp_output_tensor->data_ptr,
-                                     softmax_qk->data_ptr, v_cache->data_ptr,
-                                     n_heads, ctx.cur_size, head_dim,
-                                     ctx.cur_pos, 1.0, dtype, ctx.npu_stream);
-    }
-
-    if (ctx.model->config.debug_print) {
-      CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
-      auto tmp_output_tensor_cpu = tmp_output_tensor->to(DEV_CPU);
-      Eigen::TensorMap<
-          Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor | Eigen::DontAlign>>
-          tmp_output_tensor_map(
-              static_cast<Eigen::half *>(tmp_output_tensor_cpu->data_ptr),
-              ctx.cur_size, hidden_dim);
-      Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-      Eigen::array<Eigen::Index, 2> print_extents = {
-          static_cast<Eigen::Index>(ctx.cur_size), 16};
-      Eigen::Tensor<Eigen::half, 2, Eigen::RowMajor | Eigen::DontAlign>
-          print_slice =
-              tmp_output_tensor_map.slice(print_offsets, print_extents);
-      std::cout << "proj_o input \n" << print_slice << "\n";
-      // tmp_output_tensor_cpu->to_file("xv_output.data");
-    }
+  npu_flash_attn_gqa_layer(tmp_output_tensor->data_ptr, q_emb->data_ptr,
+                           k_cache->data_ptr, v_cache->data_ptr, ctx.cur_size,
+                           ctx.cur_pos, ctx.prev_pos, n_heads / n_kv_heads,
+                           n_kv_heads, head_dim, dtype, ctx.npu_stream);
+  if (ctx.model->config.debug_print) {
+    CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
+    auto tmp_output_cpu = tmp_output_tensor->to(DEV_CPU);
+    std::cout << "attn gqa output \n"
+              << print_tensor<2>(tmp_output_cpu->data_ptr,
+                                 ctx.model->config.data_type,
+                                 {ctx.cur_size, hidden_dim}, {ctx.cur_size, 4})
+              << "\n";
   }
 
   spdlog::debug("o_proj.Forward");
@@ -1040,17 +882,12 @@ Qwen2TransformerLayerNPUImpl::Forward(std::shared_ptr<Tensor> input,
 
   if (ctx.model->config.debug_print) {
     auto output_cpu = output->to(DEV_CPU);
-    Eigen::TensorMap<
-        Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>>
-        output_map(static_cast<Eigen::bfloat16 *>(output_cpu->data_ptr),
-                   ctx.cur_size, hidden_dim);
-    Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-    Eigen::array<Eigen::Index, 2> print_extents = {
-        static_cast<Eigen::Index>(ctx.cur_size), 4};
-    Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>
-        print_slice = output_map.slice(print_offsets, print_extents);
-    std::cout << "score output \n" << print_slice << "\n";
-    // output_cpu->to_file("first_output.data");
+    CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
+    std::cout << "score output \n"
+              << print_tensor<2>(output_cpu->data_ptr,
+                                 ctx.model->config.data_type,
+                                 {ctx.cur_size, hidden_dim}, {ctx.cur_size, 4})
+              << "\n";
   }
 
   auto output_add_input =
@@ -1067,17 +904,11 @@ Qwen2TransformerLayerNPUImpl::Forward(std::shared_ptr<Tensor> input,
   if (ctx.model->config.debug_print) {
     CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
     auto output_add_input_cpu = output_add_input->to(DEV_CPU);
-    Eigen::TensorMap<
-        Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>>
-        output_add_input_map(
-            static_cast<Eigen::bfloat16 *>(output_add_input_cpu->data_ptr),
-            ctx.cur_size, hidden_dim);
-    Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-    Eigen::array<Eigen::Index, 2> print_extents = {
-        static_cast<Eigen::Index>(ctx.cur_size), 4};
-    Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>
-        print_slice = output_add_input_map.slice(print_offsets, print_extents);
-    std::cout << "z output \n" << print_slice << "\n";
+    std::cout << "z output \n"
+              << print_tensor<2>(output_add_input_cpu->data_ptr,
+                                 ctx.model->config.data_type,
+                                 {ctx.cur_size, hidden_dim}, {ctx.cur_size, 4})
+              << "\n";
   }
 
   spdlog::debug("post_norm.Forward");
@@ -1085,17 +916,11 @@ Qwen2TransformerLayerNPUImpl::Forward(std::shared_ptr<Tensor> input,
 
   if (ctx.model->config.debug_print) {
     auto post_norm_out_cpu = post_norm_out->to(DEV_CPU);
-    Eigen::TensorMap<
-        Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>>
-        post_norm_out_map(
-            static_cast<Eigen::bfloat16 *>(post_norm_out_cpu->data_ptr),
-            ctx.cur_size, hidden_dim);
-    Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-    Eigen::array<Eigen::Index, 2> print_extents = {
-        static_cast<Eigen::Index>(ctx.cur_size), 4};
-    Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>
-        print_slice = post_norm_out_map.slice(print_offsets, print_extents);
-    std::cout << "post_norm output \n" << print_slice << "\n";
+    std::cout << "post_norm output \n"
+              << print_tensor<2>(post_norm_out_cpu->data_ptr,
+                                 ctx.model->config.data_type,
+                                 {ctx.cur_size, hidden_dim}, {ctx.cur_size, 4})
+              << "\n";
   }
 
   spdlog::debug("gate_proj.Forward");
@@ -1103,16 +928,11 @@ Qwen2TransformerLayerNPUImpl::Forward(std::shared_ptr<Tensor> input,
 
   if (ctx.model->config.debug_print) {
     auto w1_h_cpu = w1_h->to(DEV_CPU);
-    Eigen::TensorMap<
-        Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>>
-        w1_h_map(static_cast<Eigen::bfloat16 *>(w1_h->data_ptr), ctx.cur_size,
-                 ffn_hidden);
-    Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-    Eigen::array<Eigen::Index, 2> print_extents = {
-        static_cast<Eigen::Index>(ctx.cur_size), 4};
-    Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>
-        print_slice = w1_h_map.slice(print_offsets, print_extents);
-    std::cout << "gate_proj output \n" << print_slice << "\n";
+    std::cout << "gate_proj output \n"
+              << print_tensor<2>(w1_h_cpu->data_ptr,
+                                 ctx.model->config.data_type,
+                                 {ctx.cur_size, hidden_dim}, {ctx.cur_size, 4})
+              << "\n";
   }
 
   spdlog::debug("up_proj.Forward");
@@ -1134,18 +954,11 @@ Qwen2TransformerLayerNPUImpl::Forward(std::shared_ptr<Tensor> input,
   if (ctx.model->config.debug_print) {
     CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
     auto silu_out_mul_w3_cpu = silu_out_mul_w3->to(DEV_CPU);
-    Eigen::TensorMap<
-        Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>>
-        silu_out_mul_w3_map(
-            static_cast<Eigen::bfloat16 *>(silu_out_mul_w3_cpu->data_ptr),
-            ctx.cur_size, ffn_hidden);
-    // bug here
-    Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-    Eigen::array<Eigen::Index, 2> print_extents = {
-        static_cast<Eigen::Index>(ctx.cur_size), 4};
-    Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>
-        print_slice = silu_out_mul_w3_map.slice(print_offsets, print_extents);
-    std::cout << "silu output \n" << print_slice << std::endl;
+    std::cout << "silu output \n"
+              << print_tensor<2>(silu_out_mul_w3_cpu->data_ptr,
+                                 ctx.model->config.data_type,
+                                 {ctx.cur_size, ffn_hidden}, {ctx.cur_size, 4})
+              << std::endl;
     silu_out_mul_w3_cpu->to_file("silu_output.bin");
   }
 
@@ -1155,18 +968,11 @@ Qwen2TransformerLayerNPUImpl::Forward(std::shared_ptr<Tensor> input,
   if (ctx.model->config.debug_print) {
     CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
     auto w2_h_cpu = w2_h->to(DEV_CPU);
-    Eigen::TensorMap<
-        Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>>
-        w2_map(
-            static_cast<Eigen::bfloat16 *>(w2_h_cpu->data_ptr),
-            ctx.cur_size, hidden_dim);
-    // bug here
-    Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-    Eigen::array<Eigen::Index, 2> print_extents = {
-        static_cast<Eigen::Index>(ctx.cur_size), 4};
-    Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>
-        print_slice = w2_map.slice(print_offsets, print_extents);
-    std::cout << "w2 output \n" << print_slice << std::endl;
+    std::cout << "w2 output \n"
+              << print_tensor<2>(w2_h_cpu->data_ptr,
+                                 ctx.model->config.data_type,
+                                 {ctx.cur_size, hidden_dim}, {ctx.cur_size, 4})
+              << std::endl;
   }
 
   spdlog::debug("w2_h + output");
@@ -1301,13 +1107,27 @@ bool Qwen2TransformerLayerNPUImpl::Init(ModelBase *model, int layer_no) {
   }
 
     INIT_AWQ_MM(self_attn, q, hidden_dim, hidden_dim);
-    INIT_AWQ_MM(self_attn, k, hidden_dim, hidden_dim);
-    INIT_AWQ_MM(self_attn, v, hidden_dim, hidden_dim);
+    q_proj.AddBias(
+        (boost::filesystem::path(model->config.model_path) /
+         fmt::format("model.layers.{}.self_attn.q_proj.bias.bin", layer_no))
+            .string());
+    INIT_AWQ_MM(self_attn, k, kv_head_dim, hidden_dim);
+    k_proj.AddBias(
+        (boost::filesystem::path(model->config.model_path) /
+         fmt::format("model.layers.{}.self_attn.k_proj.bias.bin", layer_no))
+            .string());
+    INIT_AWQ_MM(self_attn, v, kv_head_dim, hidden_dim);
+    v_proj.AddBias(
+        (boost::filesystem::path(model->config.model_path) /
+         fmt::format("model.layers.{}.self_attn.v_proj.bias.bin", layer_no))
+            .string());
     INIT_AWQ_MM(self_attn, o, hidden_dim, hidden_dim);
 
     INIT_AWQ_MM(mlp, gate, ffn_hidden, hidden_dim);
     INIT_AWQ_MM(mlp, down, hidden_dim, ffn_hidden);
     INIT_AWQ_MM(mlp, up, ffn_hidden, hidden_dim);
+
+#undef INIT_AWQ_MM
   }
 
   auto inv_freq_name = std::string("model.layers.") + std::to_string(layer_no) +
@@ -1325,8 +1145,8 @@ bool Qwen2TransformerLayerNPUImpl::Init(ModelBase *model, int layer_no) {
 
   spdlog::debug("ffn_hidden dim: {}", ffn_hidden);
 
-  k_cache = Tensor::MakeNPUTensor(hidden_dim * max_seq_len, DT_FLOAT16);
-  v_cache = Tensor::MakeNPUTensor(hidden_dim * max_seq_len, DT_FLOAT16);
+  k_cache = Tensor::MakeNPUTensor(kv_head_dim * max_seq_len, DT_FLOAT16);
+  v_cache = Tensor::MakeNPUTensor(kv_head_dim * max_seq_len, DT_FLOAT16);
 
   return true;
 }
@@ -1352,53 +1172,9 @@ MatmulLayerNPUImpl::Forward(std::shared_ptr<Tensor> input, InferenceCtx &ctx) {
                 fmt::format("m {} n {} k {}", ctx.cur_size, n, k).c_str(),
                 ctx.npu_stream, &ctx.model->profiler, ctx.model->is_profiling);
     if (bias != nullptr) {
-      spdlog::debug("MatmulLayerNPUImpl::Forward bias nz kernel");
-      if (ctx.model->config.debug_print) {
-        Eigen::TensorMap<Eigen::Tensor<Eigen::bfloat16, 2,
-                                       Eigen::RowMajor | Eigen::DontAlign>>
-            output_map((Eigen::bfloat16 *)(input_ptr), ctx.cur_size, k);
-        Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-        Eigen::array<Eigen::Index, 2> print_extents = {4, 4};
-        Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>
-            print_slice = output_map.slice(print_offsets, print_extents);
-        std::cout << "gemm input \n" << print_slice << "\n";
-      }
-      if (ctx.model->config.debug_print) {
-        Eigen::TensorMap<Eigen::Tensor<Eigen::bfloat16, 2,
-                                       Eigen::RowMajor | Eigen::DontAlign>>
-            output_map((Eigen::bfloat16 *)(weight), k, n);
-        Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-        Eigen::array<Eigen::Index, 2> print_extents = {4, 4};
-        Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>
-            print_slice = output_map.slice(print_offsets, print_extents);
-        std::cout << "gemm weight \n" << print_slice << "\n";
-        Eigen::TensorMap<
-            Eigen::Tensor<float, 1, Eigen::RowMajor | Eigen::DontAlign>>
-            bias_map((float *)(bias), n);
-        Eigen::array<Eigen::Index, 1> print_bias_offsets = {0};
-        Eigen::array<Eigen::Index, 1> print_bias_extents = {32};
-        Eigen::Tensor<float, 1, Eigen::RowMajor | Eigen::DontAlign>
-            print_bias_slice =
-                bias_map.slice(print_bias_offsets, print_bias_extents);
-        std::cout << "gemm bias \n" << print_bias_slice << "\n";
-      }
-
       npu_matmul_bias_nz_layer((void *)output_ptr, (void *)input_ptr,
                                (void *)weight, (void *)bias, ctx.cur_size, n, k,
                                dtype, ctx.npu_stream);
-      CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
-      if (ctx.model->config.debug_print) {
-        CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
-        Eigen::TensorMap<Eigen::Tensor<Eigen::bfloat16, 2,
-                                       Eigen::RowMajor | Eigen::DontAlign>>
-            output_map((Eigen::bfloat16 *)(output_ptr), ctx.cur_size, n);
-        Eigen::array<Eigen::Index, 2> print_offsets = {0, 0};
-        Eigen::array<Eigen::Index, 2> print_extents = {4, 4};
-        Eigen::Tensor<Eigen::bfloat16, 2, Eigen::RowMajor | Eigen::DontAlign>
-            print_slice = output_map.slice(print_offsets, print_extents);
-        std::cout << "gemm output \n" << print_slice << "\n";
-      }
-
     } else {
       npu_matmul_nz_layer((void *)output_ptr, (void *)input_ptr, (void *)weight,
                           ctx.cur_size, n, k, dtype, ctx.npu_stream);
@@ -1408,9 +1184,17 @@ MatmulLayerNPUImpl::Forward(std::shared_ptr<Tensor> input, InferenceCtx &ctx) {
     APP_PROFILE("MatmulLayerAWQ4Bit",
                 fmt::format("m {} n {} k {}", ctx.cur_size, n, k).c_str(),
                 ctx.npu_stream, &ctx.model->profiler, ctx.model->is_profiling);
-    npu_matmul_nz_awq_4bit_layer(
-        (void *)output_ptr, (void *)input_ptr, (void *)weight, (void *)qzeros,
-        (void *)qscales, ctx.cur_size, n, k, DT_FLOAT16, ctx.npu_stream);
+    if (bias != nullptr) {
+      npu_matmul_nz_awq_4bit_bias_layer(
+          (void *)output_ptr, (void *)input_ptr, (void *)weight, (void *)qzeros,
+          (void *)qscales, (void *)bias, ctx.cur_size, n, k, dtype,
+          ctx.npu_stream);
+
+    } else {
+      npu_matmul_nz_awq_4bit_layer(
+          (void *)output_ptr, (void *)input_ptr, (void *)weight, (void *)qzeros,
+          (void *)qscales, ctx.cur_size, n, k, dtype, ctx.npu_stream);
+    }
   }
   if (ctx.model->config.debug_print) {
     CHECK_ACL(aclrtSynchronizeStream(ctx.npu_stream));
@@ -1510,6 +1294,7 @@ bool MatmulLayerNPUImpl::InitAWQ(ModelBase *model,
                                 quant_type)) {
     return false;
   }
+  dtype = model->config.data_type;
 
   void *tmp_dev_weight;
   void *tmp_dev_zero;
@@ -1532,6 +1317,23 @@ bool MatmulLayerNPUImpl::InitAWQ(ModelBase *model,
   weight = (uint8_t *)tmp_dev_weight;
   qzeros = (uint8_t *)tmp_dev_zero;
   qscales = (uint8_t *)tmp_dev_scale;
+  return true;
+}
+
+bool MatmulLayerNPUImpl::AddBias(const std::string &bias_path) {
+  bias_size = n * sizeof(float);
+
+  float *temp_host_bias = new float[n];
+
+  if (!LoadBinaryFile(bias_path.c_str(), temp_host_bias, bias_size)) {
+    delete[] temp_host_bias;
+    return false;
+  }
+
+  CHECK_ACL(aclrtMalloc((void **)&bias, bias_size, ACL_MEM_MALLOC_HUGE_FIRST));
+  CHECK_ACL(aclrtMemcpy(bias, bias_size, temp_host_bias, bias_size,
+                        ACL_MEMCPY_HOST_TO_DEVICE));
+  delete[] temp_host_bias;
   return true;
 }
 

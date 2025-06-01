@@ -1,0 +1,15 @@
+./build/src/llama2_main \
+--config=$1/config.json \
+--tokenizer=$1/ \
+--weight=$1_converted \
+--model_type=qwen2 \
+--device_type=npu \
+--max_seq_len=8192 \
+--max_gen_token=1024 \
+--temperature=0.6 \
+--debug_print=false \
+--log_level=info \
+--rope_is_neox_style=true \
+--benchmark \
+--benchmark_input_seq_length=$2 \
+--benchmark_output_seq_length=$3
